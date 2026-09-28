@@ -1,0 +1,8 @@
+{
+  "n_examples": 98,
+  "n_train": 78,
+  "n_val": 20,
+  "val_auc": 0.41414141414141414,
+  "base_rate_profitable": 0.5714285714285714,
+  "note": "Trained on SYNTHETIC data for demo purposes only -- not a real trading model."
+}

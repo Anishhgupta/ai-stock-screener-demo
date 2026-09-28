@@ -1,18 +1,6 @@
 """
 Builds a labeled training set from a completed trading day's raw tick
 CSV (as written by data/tick_store.py).
-
-IMPORTANT (added 2026-09-02): build_training_set now accepts an
-optional pre-built CrossoverEngine. Pass a warm-started engine (see
-ml/rebuild_with_warmstart.py) to avoid the cold-start problem: without
-warm-starting, this function has to spend the first ~2 hours of the
-day's OWN tick data just re-warming SMMA20/120 from scratch before it
-can detect any crossover -- silently losing every real crossover that
-happened during that warm-up window, even though the live system (which
-DOES warm-start at every startup) caught them in real time. This was
-discovered directly: a live 2026-09-02 session reported 18 real
-ML-scored crossovers, but a cold-start replay of that same day's CSV
-reconstructed only 1.
 """
 from __future__ import annotations
 import csv
@@ -37,13 +25,6 @@ class LabeledExample:
 
 
 def load_ticks_csv(path: Path) -> List[Tick]:
-    """
-    Skips malformed rows instead of crashing on the whole file -- these
-    can occur if a live session's terminal was force-closed mid-write
-    (a partial/truncated final row), leaving missing or empty fields.
-    Prints a count of skipped rows so data quality issues stay visible
-    rather than being silently swallowed.
-    """
     ticks = []
     skipped = 0
     with open(path, newline="") as f:
@@ -85,16 +66,15 @@ def _forward_outcome(ticks_by_symbol, symbol, entry_idx, entry_price, signal):
     return direction * (last.ltp - entry_price) / entry_price
 
 
-def build_training_set(tick_csv_path: Path, engine: Optional[CrossoverEngine] = None) -> List[LabeledExample]:
+def build_training_set_from_ticks(ticks: List[Tick], engine: Optional[CrossoverEngine] = None) -> List[LabeledExample]:
     """
-    engine: optional pre-built CrossoverEngine. Pass a warm-started one
-    (engine.warm_start() already called per symbol) to avoid losing
-    crossovers to the cold-start warm-up problem described above. If
-    None, a fresh (cold) engine is created, matching the original
-    behavior -- kept as the default for backward compatibility.
+    Same labeling logic as build_training_set(), but operating on an
+    already-loaded list of Tick objects instead of reading a CSV file.
+    Used by both build_training_set() (after loading from disk) and
+    demo/train_demo_model.py (which generates synthetic ticks entirely
+    in memory, with no file ever written).
     """
-    ticks = load_ticks_csv(tick_csv_path)
-    ticks.sort(key=lambda t: t.ts)
+    ticks = sorted(ticks, key=lambda t: t.ts)
 
     ticks_by_symbol = {}
     for t in ticks:
@@ -125,3 +105,8 @@ def build_training_set(tick_csv_path: Path, engine: Optional[CrossoverEngine] = 
         ))
 
     return examples
+
+
+def build_training_set(tick_csv_path: Path, engine: Optional[CrossoverEngine] = None) -> List[LabeledExample]:
+    ticks = load_ticks_csv(tick_csv_path)
+    return build_training_set_from_ticks(ticks, engine=engine)
