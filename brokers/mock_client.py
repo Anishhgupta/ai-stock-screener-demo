@@ -26,7 +26,17 @@ class MockClient(BrokerClient):
         self._state = {}
         for s in self.symbols:
             base = random.uniform(40, 480)
-            self._state[s] = {"price": base, "drift": 0.0, "drift_timer": 0, "cum_vol": random.randint(50_000, 500_000)}
+            self._state[s] = {
+                "price": base, "drift": 0.0, "drift_timer": 0,
+                "cum_vol": random.randint(50_000, 500_000),
+                # Persistent depth multipliers (mean-reverting around 1.0).
+                # Real order books are autocorrelated: depth at tick t is
+                # close to depth at tick t-1. Redrawing it independently
+                # every tick made bid/ask imbalance flip randomly, which
+                # tripped the position monitor's "imbalance flipped"
+                # deterioration flag on pure noise.
+                "bid_f": 1.0, "ask_f": 1.0,
+            }
 
     def connect(self) -> None:
         self._running = True
@@ -51,6 +61,14 @@ class MockClient(BrokerClient):
         thread.start()
         self._thread = thread
 
+    @staticmethod
+    def _step_depth_factor(f: float) -> float:
+        # AR(1) around 1.0: pulls back toward 1.0 by 10% per tick, plus
+        # small noise. Stationary std is roughly 0.09, so depth stays
+        # within about +/-10% of its mean instead of +/-33% iid.
+        f += 0.1 * (1.0 - f) + random.gauss(0, 0.04)
+        return max(0.2, min(2.0, f))
+
     def _run(self, on_tick):
         while self._running:
             for symbol in self.symbols:
@@ -67,8 +85,10 @@ class MockClient(BrokerClient):
                 bid_price = round(st["price"] - spread, 2)
                 ask_price = round(st["price"] + spread, 2)
                 skew = 1.0 + max(-0.6, min(0.6, st["drift"] * 4))
-                bid_qty = int(max(50_000, random.gauss(9_00_000, 3_00_000) * skew))
-                ask_qty = int(max(50_000, random.gauss(9_00_000, 3_00_000) * (2 - skew)))
+                st["bid_f"] = self._step_depth_factor(st["bid_f"])
+                st["ask_f"] = self._step_depth_factor(st["ask_f"])
+                bid_qty = int(max(50_000, 9_00_000 * st["bid_f"] * skew))
+                ask_qty = int(max(50_000, 9_00_000 * st["ask_f"] * (2 - skew)))
                 tick_ts = self._sim_clock if self.sim_seconds_per_loop > 0 else time.time()
                 tick = Tick(symbol=symbol, ts=tick_ts, ltp=round(st["price"], 2), ltq=ltq,
                             total_traded_qty=st["cum_vol"], bid_price=bid_price, bid_qty=bid_qty,
