@@ -88,7 +88,7 @@ def start_background_engine(state: DemoState):
                     symbol=event.symbol, signal=event.signal, probability=None,
                     decision="AVOID", reasons=["No trained model available"],
                 )
-            trader.on_crossover(event, decision, tick.ltp)
+            trader.on_crossover(event, decision, tick.ltp, ts=tick.ts)
             
             # Log AI Decisions for the Donut Chart
             with state.lock:

@@ -69,10 +69,18 @@ class PaperTradingEngine:
         self.avoided_count = 0
         self.avoided_reasons: dict[str, int] = {}
 
-    def on_crossover(self, event, decision: Decision, live_ltp: float):
+    def on_crossover(self, event, decision: Decision, live_ltp: float,
+                     ts: Optional[float] = None):
+        # `ts` MUST be the triggering tick's timestamp. Entry and exit
+        # timing (elapsed = tick.ts - entry_ts) have to share one clock;
+        # with an accelerated simulated clock, mixing in time.time()
+        # made every position look "held" for > max_hold_minutes and
+        # close instantly at breakeven. Falls back to time.time() only
+        # for callers that don't pass it (real-time feeds).
         symbol, signal = event.symbol, event.signal
 
-        self._open(Book.BASIC, symbol, signal, live_ltp, event.features, entry_prob=None)
+        self._open(Book.BASIC, symbol, signal, live_ltp, event.features,
+                   entry_prob=None, ts=ts)
         self.trade_log.append(TradeLogEntry(
             book=Book.BASIC, symbol=symbol, signal=signal,
             decision=None, probability=None, reasons=["Basic strategy: trade every crossover"],
@@ -80,7 +88,8 @@ class PaperTradingEngine:
         ))
 
         if decision.decision == "ACCEPT":
-            self._open(Book.FILTERED, symbol, signal, live_ltp, event.features, entry_prob=decision.probability)
+            self._open(Book.FILTERED, symbol, signal, live_ltp, event.features,
+                       entry_prob=decision.probability, ts=ts)
             self.trade_log.append(TradeLogEntry(
                 book=Book.FILTERED, symbol=symbol, signal=signal,
                 decision=decision.decision, probability=decision.probability,
@@ -97,7 +106,8 @@ class PaperTradingEngine:
             ))
 
     def _open(self, book: Book, symbol: str, signal: str, price: float,
-              feat: FeatureSnapshot, entry_prob: Optional[float]):
+              feat: FeatureSnapshot, entry_prob: Optional[float],
+              ts: Optional[float] = None):
         key = (book, symbol)
         if key in self.open_positions:
             return
@@ -105,7 +115,8 @@ class PaperTradingEngine:
             return
         qty = max(1, int(CONFIG.capital_per_trade // price))
         self.open_positions[key] = Position(
-            book=book, symbol=symbol, signal=signal, entry_price=price, entry_ts=time.time(),
+            book=book, symbol=symbol, signal=signal, entry_price=price,
+            entry_ts=ts if ts is not None else time.time(),
             qty=qty, entry_feat=feat, entry_prob=entry_prob,
         )
 
