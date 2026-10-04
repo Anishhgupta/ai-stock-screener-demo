@@ -203,7 +203,7 @@ with state.lock:
     updated_at = state.updated_at
 
 age = time.time() - updated_at if updated_at else None
-st.caption(f"Live Market Data | Last tick: {age:.1f}s ago" if age is not None else "Starting up...")
+st.caption(f"Simulated market data (demo, not real prices) | Last tick: {age:.1f}s ago" if age is not None else "Starting up...")
 
 # Top Row: KPIs and Gauges
 col1, col2, col3 = st.columns([1.5, 1.5, 1])
