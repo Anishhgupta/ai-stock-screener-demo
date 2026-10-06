@@ -2,7 +2,7 @@
 
 ![tests](https://github.com/Anishhgupta/ai-stock-screener-demo/actions/workflows/tests.yml/badge.svg)
 
-**▶ Live demo: https://ai-stock-screener-demo-hwmhgdfx33svxcf78zrsjx.streamlit.app/**
+**▶ Live demo: [https://ai-stock-screener-demo-hwmhgdfx33svxcf78zrsjx.streamlit.app/](https://ai-stock-screener-demo-hwmhgdfx33svxcf78zrsjx.streamlit.app/)**
 
 A Python real-time screening and paper-trading system for NSE equities. It detects SMMA20/SMMA120 crossovers, reads Last Traded Quantity (LTQ) dynamics and 5-level Bid/Ask market depth, and passes each signal through a machine-learned **ACCEPT / AVOID** filter. The goal is to catch good trades and, more importantly, to avoid losing ones.
 
@@ -32,11 +32,12 @@ Both books use stop-loss, target and max-hold exits.
 
 ## Run it yourself
 
-```
+```bash
 git clone https://github.com/Anishhgupta/ai-stock-screener-demo.git
 cd ai-stock-screener-demo
 pip install -r requirements.txt
-streamlit run demo_app.py```
+streamlit run demo_app.py
+```
 
 The demo needs no credentials. To retrain the demo model: `python -m demo.train_demo_model`.
 
