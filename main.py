@@ -14,14 +14,16 @@ Paper trades and the decision log are saved to a local SQLite database
 (data/store/screener.db) so history survives restarts. Set SCREENER_DB_URL
 to use another database, or pass --no-db to run without persistence.
 
-The dashboard (Streamlit) reads from state.json, which this script writes
-periodically -- run it separately:
+The dashboard (Streamlit) reads the live snapshot this script saves to the
+database about once a second (state.json is still written as a fallback) --
+run it separately:
     streamlit run dashboard/app.py
 """
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import signal as os_signal
 import sys
 import time
@@ -44,6 +46,7 @@ from storage.repository import Repository
 from trading.paper_engine import PaperTradingEngine, Book
 
 STATE_PATH = BASE_DIR / "dashboard" / "state.json"
+logger = logging.getLogger(__name__)
 
 
 class App:
@@ -156,6 +159,17 @@ class App:
         }
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(state, indent=2, default=str))
+        self._save_snapshot(state)
+
+    def _save_snapshot(self, state: dict):
+        """Mirror the dashboard state into the database (best effort)."""
+        if self.repo is None:
+            return
+        try:
+            self.repo.save_live_snapshot(self.user_id, state)
+        except Exception:
+            # A database hiccup must never kill the broker callback thread.
+            logger.exception("Could not save live snapshot to the database; continuing")
 
     def _warm_start_from_history(self):
         """

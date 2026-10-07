@@ -6,14 +6,16 @@ exposes callbacks, and this class is what gets plugged into them.
 from __future__ import annotations
 
 import json
+import time
 from typing import List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from storage.db import Base
-from storage.models import PaperPosition, TradeLogRow, User
+from storage.models import LiveSnapshot, PaperPosition, TradeLogRow, User
 
 
 class Repository:
@@ -23,13 +25,18 @@ class Repository:
 
     # ----------------------------------------------------------- users
     def ensure_user(self, username: str = "local") -> int:
+        """
+        Get-or-create. Insert first and treat a unique-constraint clash as
+        "already exists", so the trading process and the dashboard can both
+        call this at startup without racing each other.
+        """
         with self._sessions() as session:
-            user = session.scalar(select(User).where(User.username == username))
-            if user is None:
-                user = User(username=username)
-                session.add(user)
+            try:
+                session.add(User(username=username))
                 session.commit()
-            return user.id
+            except IntegrityError:
+                session.rollback()
+            return session.scalar(select(User.id).where(User.username == username))
 
     # ---------------------------------------------------------- writes
     def record_closed_position(self, user_id: int, pos) -> None:
@@ -57,13 +64,44 @@ class Repository:
             ))
             session.commit()
 
+    def save_live_snapshot(self, user_id: int, state: dict) -> None:
+        """Overwrite this user's single live-state row."""
+        payload = json.dumps(state, default=str)
+        updated_at = float(state.get("updated_at", time.time()))
+        with self._sessions() as session:
+            row = session.get(LiveSnapshot, user_id)
+            if row is None:
+                session.add(LiveSnapshot(user_id=user_id, updated_at=updated_at, payload=payload))
+            else:
+                row.updated_at = updated_at
+                row.payload = payload
+            session.commit()
+
     # ----------------------------------------------------------- reads
+    def load_live_snapshot(self, user_id: int) -> Optional[dict]:
+        with self._sessions() as session:
+            row = session.get(LiveSnapshot, user_id)
+        return json.loads(row.payload) if row is not None else None
+
     def closed_positions(self, user_id: int, book: Optional[str] = None) -> List[PaperPosition]:
         query = select(PaperPosition).where(PaperPosition.user_id == user_id)
         if book is not None:
             query = query.where(PaperPosition.book == book)
         with self._sessions() as session:
             return list(session.scalars(query.order_by(PaperPosition.id)))
+
+    def recent_closed_positions(self, user_id: int, limit: int = 50) -> List[dict]:
+        """Newest first, as plain dicts."""
+        query = (select(PaperPosition).where(PaperPosition.user_id == user_id)
+                 .order_by(PaperPosition.id.desc()).limit(limit))
+        with self._sessions() as session:
+            rows = list(session.scalars(query))
+        return [
+            {"book": r.book, "symbol": r.symbol, "signal": r.signal, "qty": r.qty,
+             "entry_price": r.entry_price, "exit_price": r.exit_price,
+             "exit_ts": r.exit_ts, "exit_reason": r.exit_reason, "pnl": r.pnl}
+            for r in rows
+        ]
 
     def trade_log(self, user_id: int, limit: Optional[int] = None) -> List[dict]:
         query = (select(TradeLogRow).where(TradeLogRow.user_id == user_id)

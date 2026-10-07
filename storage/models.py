@@ -59,3 +59,17 @@ class TradeLogRow(Base):
     outcome: Mapped[str] = mapped_column(String(16))
     pnl: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     ts: Mapped[float] = mapped_column(Float)
+
+
+class LiveSnapshot(Base):
+    """
+    The latest live dashboard state, one row per user, overwritten about
+    once a second by the trading process. Replaces polling a JSON file:
+    the database write is atomic, so the dashboard never reads a
+    half-written snapshot.
+    """
+    __tablename__ = "live_snapshots"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    updated_at: Mapped[float] = mapped_column(Float)
+    payload: Mapped[str] = mapped_column(Text)  # JSON-encoded state dict
