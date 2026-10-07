@@ -10,6 +10,10 @@ Once you have a trained model and real broker creds exported as env vars:
     python main.py --broker fyers
     python main.py --broker angelone
 
+Paper trades and the decision log are saved to a local SQLite database
+(data/store/screener.db) so history survives restarts. Set SCREENER_DB_URL
+to use another database, or pass --no-db to run without persistence.
+
 The dashboard (Streamlit) reads from state.json, which this script writes
 periodically -- run it separately:
     streamlit run dashboard/app.py
@@ -32,23 +36,38 @@ from brokers.base import build_broker, Tick
 from config import CONFIG, BASE_DIR
 from data.tick_store import TickStore
 from features.engineering import build_feature_snapshot
-from ml.predict import CrossoverModel
+from ml.predict import CrossoverModel, Decision
 from reports.performance import save_report, print_report
 from signals.crossover import CrossoverEngine
+from storage.db import make_engine
+from storage.repository import Repository
 from trading.paper_engine import PaperTradingEngine, Book
 
 STATE_PATH = BASE_DIR / "dashboard" / "state.json"
 
 
 class App:
-    def __init__(self, broker_name: str):
+    def __init__(self, broker_name: str, use_db: bool = True, db_url: str | None = None):
         self.engine = CrossoverEngine()
         self.model = CrossoverModel()
-        self.trader = PaperTradingEngine(self.model)
+        self.trader = self._make_trader(use_db, db_url)
         self.broker = self._build_broker(broker_name)
         self._last_state_write = 0.0
         self._latest_by_symbol: dict[str, dict] = {}
         self._last_tick_at: float = time.time()
+
+    def _make_trader(self, use_db: bool, db_url: str | None = None) -> PaperTradingEngine:
+        """Paper-trading engine, optionally wired to the database."""
+        if not use_db:
+            self.repo, self.user_id = None, None
+            return PaperTradingEngine(self.model)
+        self.repo = Repository(make_engine(db_url))
+        self.user_id = self.repo.ensure_user("local")
+        return PaperTradingEngine(
+            self.model,
+            on_close=lambda pos: self.repo.record_closed_position(self.user_id, pos),
+            on_log=lambda entry: self.repo.record_trade_log(self.user_id, entry),
+        )
 
     def _build_broker(self, broker_name: str):
         if broker_name == "angelone":
@@ -64,6 +83,19 @@ class App:
             return AngelOneClient(CONFIG.watchlist, token_map=token_map)
         return build_broker(broker_name, CONFIG.watchlist)
 
+    def _decide(self, event) -> Decision:
+        """
+        ACCEPT/AVOID for a crossover. With no trained model, return a
+        placeholder AVOID instead of skipping the trading logic, so the
+        Basic book still trades every crossover.
+        """
+        if self.model.is_available:
+            return self.model.decide(event)
+        return Decision(
+            symbol=event.symbol, signal=event.signal, probability=None,
+            decision="AVOID", reasons=["No trained model available"],
+        )
+
     def handle_tick(self, tick: Tick):
         self._last_tick_at = time.time()
         event = self.engine.on_tick(tick)
@@ -76,12 +108,16 @@ class App:
         )
 
         decision = None
-        if event is not None and self.model.is_available:
-            decision = self.model.decide(event)
+        if event is not None:
+            decision = self._decide(event)
             self.trader.on_crossover(event, decision, tick.ltp)
 
         self.trader.on_tick(tick, live_feat)
 
+        # A crossover is a single-tick event, so signal/probability/decision/
+        # reasons carry forward from the last real value for this symbol
+        # instead of going blank on every ordinary tick.
+        existing = self._latest_by_symbol.get(tick.symbol, {})
         self._latest_by_symbol[tick.symbol] = {
             "symbol": tick.symbol,
             "ltp": tick.ltp,
@@ -92,10 +128,10 @@ class App:
             "bid_price": tick.bid_price, "bid_qty": tick.bid_qty,
             "ask_price": tick.ask_price, "ask_qty": tick.ask_qty,
             "imbalance": live_feat.bid_ask_imbalance if live_feat else None,
-            "signal": event.signal if event else None,
-            "probability": decision.probability if decision else None,
-            "decision": decision.decision if decision else None,
-            "reasons": decision.reasons if decision else [],
+            "signal": event.signal if event is not None else existing.get("signal"),
+            "probability": decision.probability if decision is not None else existing.get("probability"),
+            "decision": decision.decision if decision is not None else existing.get("decision"),
+            "reasons": decision.reasons if decision is not None else existing.get("reasons", []),
             "ts": tick.ts,
         }
 
@@ -201,7 +237,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--broker", default=CONFIG.broker, choices=["mock", "fyers", "angelone"])
     parser.add_argument("--duration", type=int, default=None, help="Seconds to run (omit for indefinite/until Ctrl+C)")
+    parser.add_argument("--no-db", action="store_true", help="Run without saving trades to the database")
     args = parser.parse_args()
 
-    app = App(args.broker)
+    app = App(args.broker, use_db=not args.no_db)
     app.run(args.duration)
