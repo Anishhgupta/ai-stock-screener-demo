@@ -24,3 +24,4 @@ pyinstaller>=6.5.0
 
 # Testing
 pytest>=8.0
+SQLAlchemy>=2.0

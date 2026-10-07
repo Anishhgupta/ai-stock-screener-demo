@@ -33,3 +33,6 @@ __pycache__/
 
 # Secrets (just in case you create one later)
 .env
+*.db
+*.db-wal
+*.db-shm

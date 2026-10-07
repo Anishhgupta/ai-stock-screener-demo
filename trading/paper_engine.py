@@ -9,18 +9,25 @@ always available from the same live run:
 
 Exit rules (both books, once in a trade): stop-loss, target, max hold
 time, or -- filtered book only -- a deterioration exit.
+
+Persistence is optional and pluggable: pass `on_log` and/or `on_close`
+callbacks (see storage/repository.py) to record trade events. With no
+callbacks (the demo), everything stays in memory exactly as before.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 from brokers.base import Tick
 from config import CONFIG
 from features.engineering import FeatureSnapshot
 from ml.predict import CrossoverModel, Decision, check_deterioration
+
+logger = logging.getLogger(__name__)
 
 
 class Book(str, Enum):
@@ -61,13 +68,31 @@ class TradeLogEntry:
 
 
 class PaperTradingEngine:
-    def __init__(self, model: CrossoverModel):
+    def __init__(self, model: CrossoverModel,
+                 on_close: Optional[Callable[[Position], None]] = None,
+                 on_log: Optional[Callable[[TradeLogEntry], None]] = None):
         self.model = model
+        self.on_close = on_close
+        self.on_log = on_log
         self.open_positions: dict[tuple[Book, str], Position] = {}
         self.closed_positions: list[Position] = []
         self.trade_log: list[TradeLogEntry] = []
         self.avoided_count = 0
         self.avoided_reasons: dict[str, int] = {}
+
+    def _log(self, entry: TradeLogEntry):
+        self.trade_log.append(entry)
+        self._notify(self.on_log, entry)
+
+    @staticmethod
+    def _notify(callback, payload):
+        # A storage failure must never stop the trading loop.
+        if callback is None:
+            return
+        try:
+            callback(payload)
+        except Exception:
+            logger.exception("Persistence callback failed; trading continues")
 
     def on_crossover(self, event, decision: Decision, live_ltp: float,
                      ts: Optional[float] = None):
@@ -81,7 +106,7 @@ class PaperTradingEngine:
 
         self._open(Book.BASIC, symbol, signal, live_ltp, event.features,
                    entry_prob=None, ts=ts)
-        self.trade_log.append(TradeLogEntry(
+        self._log(TradeLogEntry(
             book=Book.BASIC, symbol=symbol, signal=signal,
             decision=None, probability=None, reasons=["Basic strategy: trade every crossover"],
             outcome="OPEN",
@@ -90,7 +115,7 @@ class PaperTradingEngine:
         if decision.decision == "ACCEPT":
             self._open(Book.FILTERED, symbol, signal, live_ltp, event.features,
                        entry_prob=decision.probability, ts=ts)
-            self.trade_log.append(TradeLogEntry(
+            self._log(TradeLogEntry(
                 book=Book.FILTERED, symbol=symbol, signal=signal,
                 decision=decision.decision, probability=decision.probability,
                 reasons=decision.reasons, outcome="OPEN",
@@ -99,7 +124,7 @@ class PaperTradingEngine:
             self.avoided_count += 1
             for r in decision.reasons:
                 self.avoided_reasons[r] = self.avoided_reasons.get(r, 0) + 1
-            self.trade_log.append(TradeLogEntry(
+            self._log(TradeLogEntry(
                 book=Book.FILTERED, symbol=symbol, signal=signal,
                 decision=decision.decision, probability=decision.probability,
                 reasons=decision.reasons, outcome="AVOIDED",
@@ -173,12 +198,13 @@ class PaperTradingEngine:
         # BOTH win and loss buckets in summary() while still counting
         # toward total_trades, discovered via a real breakeven trade in
         # live Fyers data on 2026-08-31/09-01.
-        self.trade_log.append(TradeLogEntry(
+        self._log(TradeLogEntry(
             book=pos.book, symbol=pos.symbol, signal=pos.signal,
             decision="ACCEPT" if pos.book == Book.FILTERED else None,
             probability=pos.entry_prob, reasons=[reason],
             outcome="WIN" if (pnl is not None and pnl > 0) else "LOSS", pnl=pnl,
         ))
+        self._notify(self.on_close, pos)
 
     def summary(self, book: Book) -> dict:
         closed = [p for p in self.closed_positions if p.book == book]
