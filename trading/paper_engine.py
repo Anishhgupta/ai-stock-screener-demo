@@ -104,21 +104,23 @@ class PaperTradingEngine:
         # for callers that don't pass it (real-time feeds).
         symbol, signal = event.symbol, event.signal
 
-        self._open(Book.BASIC, symbol, signal, live_ltp, event.features,
-                   entry_prob=None, ts=ts)
+        skipped = self._open(Book.BASIC, symbol, signal, live_ltp, event.features,
+                             entry_prob=None, ts=ts)
         self._log(TradeLogEntry(
             book=Book.BASIC, symbol=symbol, signal=signal,
-            decision=None, probability=None, reasons=["Basic strategy: trade every crossover"],
-            outcome="OPEN",
+            decision=None, probability=None,
+            reasons=[skipped] if skipped else ["Basic strategy: trade every crossover"],
+            outcome="SKIPPED" if skipped else "OPEN",
         ))
 
         if decision.decision == "ACCEPT":
-            self._open(Book.FILTERED, symbol, signal, live_ltp, event.features,
-                       entry_prob=decision.probability, ts=ts)
+            skipped = self._open(Book.FILTERED, symbol, signal, live_ltp, event.features,
+                                 entry_prob=decision.probability, ts=ts)
             self._log(TradeLogEntry(
                 book=Book.FILTERED, symbol=symbol, signal=signal,
                 decision=decision.decision, probability=decision.probability,
-                reasons=decision.reasons, outcome="OPEN",
+                reasons=[skipped, *decision.reasons] if skipped else decision.reasons,
+                outcome="SKIPPED" if skipped else "OPEN",
             ))
         else:
             self.avoided_count += 1
@@ -132,18 +134,20 @@ class PaperTradingEngine:
 
     def _open(self, book: Book, symbol: str, signal: str, price: float,
               feat: FeatureSnapshot, entry_prob: Optional[float],
-              ts: Optional[float] = None):
+              ts: Optional[float] = None) -> Optional[str]:
+        """Opens a position. Returns None on success, or why it was skipped."""
         key = (book, symbol)
         if key in self.open_positions:
-            return
+            return "Position already open in this symbol"
         if sum(1 for (b, _) in self.open_positions if b == book) >= CONFIG.max_concurrent_positions:
-            return
+            return "Max concurrent positions reached"
         qty = max(1, int(CONFIG.capital_per_trade // price))
         self.open_positions[key] = Position(
             book=book, symbol=symbol, signal=signal, entry_price=price,
             entry_ts=ts if ts is not None else time.time(),
             qty=qty, entry_feat=feat, entry_prob=entry_prob,
         )
+        return None
 
     def on_tick(self, tick: Tick, live_feat: Optional[FeatureSnapshot]):
         for book in (Book.BASIC, Book.FILTERED):
