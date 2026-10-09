@@ -1,0 +1,73 @@
+# Usage (from the project folder):
+#
+#   Demo, no credentials needed:
+#       docker compose --profile demo up --build
+#       -> http://localhost:8501
+#
+#   Screener + dashboard (mock broker by default; set BROKER=fyers for live):
+#       docker compose --profile live up --build
+#       -> http://localhost:8502
+#
+# Stop with Ctrl+C, then `docker compose --profile live down`.
+
+name: ai-stock-screener
+
+x-build: &build
+  build: .
+  image: ai-stock-screener:local
+
+services:
+  demo:
+    <<: *build
+    profiles: ["demo"]
+    environment:
+      SCREENER_MIN_DEPTH_QTY: ${SCREENER_MIN_DEPTH_QTY:-2000}
+    ports:
+      - "8501:8501"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  screener:
+    <<: *build
+    profiles: ["live"]
+    command: ["python", "main.py", "--broker", "${BROKER:-mock}"]
+    init: true
+    # main.py shuts down cleanly (saves its report) on SIGINT only.
+    stop_signal: SIGINT
+    stop_grace_period: 30s
+    # main.py exits by itself after market close; do not restart it in a loop.
+    restart: "no"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SCREENER_MIN_DEPTH_QTY: ${SCREENER_MIN_DEPTH_QTY:-2000}
+      SCREENER_DB_URL: sqlite:////db/screener.db
+    volumes:
+      - screener-db:/db
+      - ./data/store:/app/data/store
+      - ./ml/model_store:/app/ml/model_store
+
+  dashboard:
+    <<: *build
+    profiles: ["live"]
+    command: ["streamlit", "run", "dashboard/app.py",
+              "--server.address=0.0.0.0", "--server.port=8501",
+              "--server.headless=true", "--browser.gatherUsageStats=false"]
+    environment:
+      SCREENER_DB_URL: sqlite:////db/screener.db
+    ports:
+      - "8502:8501"
+    volumes:
+      - screener-db:/db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  screener-db:
