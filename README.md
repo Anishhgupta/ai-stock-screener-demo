@@ -109,14 +109,15 @@ Real debugging, documented rather than hidden:
 - **Noisy mock order book:** independently redrawn depth every tick made imbalance flip randomly and tripped the deterioration monitor. Mock depth is now autocorrelated like a real book.
 - **Startup race on user creation:** the trading process and the dashboard could both create the default user at once. Caught by a multi-threaded test and fixed with insert-then-handle-conflict.
 - **Model portability:** `joblib` models are not guaranteed to load across scikit-learn versions. Retrain locally or pin matching versions (the Docker image pins them).
+- **Deterioration monitor closed trades within a second:** found on a live run. The monitor re-scored the model on every tick, and the score swung by 19 to 86 points between consecutive ticks, so all three ACCEPTed trades were closed in the same second they opened. The monitor now waits 120 seconds and only exits on a warning that persists for 30 seconds.
 
 ## Known limitations
 
 - Open positions live in memory. Positions still open when a session ends are discarded, not recorded.
 - Carried-forward decisions are not restored after a restart until each symbol's next crossover.
 - The Fyers access token must be regenerated every trading day.
-- The model is trained on a small sample (78 real crossovers). Treat its results as a proof of pipeline, not a trading edge.
 - The Docker setup keeps its own database, separate from a local run's.
+- Model scores are unstable between consecutive ticks, so an ACCEPT can depend on single-tick noise. The model is trained on a small sample and needs more data and a stability check before its results mean anything.
 
 ## Tech stack
 
