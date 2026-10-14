@@ -10,6 +10,12 @@ always available from the same live run:
 Exit rules (both books, once in a trade): stop-loss, target, max hold
 time, or -- filtered book only -- a deterioration exit.
 
+The deterioration monitor re-scores the model on every tick, and a single
+tick's LTQ/depth is noisy enough to swing the score by tens of points. So
+it only starts judging after a grace period (monitor_grace_seconds) and
+only exits when the warning has persisted for monitor_confirm_seconds.
+Hard exits (stop-loss, target, max hold) are never delayed.
+
 Persistence is optional and pluggable: pass `on_log` and/or `on_close`
 callbacks (see storage/repository.py) to record trade events. With no
 callbacks (the demo), everything stays in memory exactly as before.
@@ -28,6 +34,9 @@ from features.engineering import FeatureSnapshot
 from ml.predict import CrossoverModel, Decision, check_deterioration
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MONITOR_GRACE_SECONDS = 120.0
+DEFAULT_MONITOR_CONFIRM_SECONDS = 30.0
 
 
 class Book(str, Enum):
@@ -52,6 +61,7 @@ class Position:
     pnl: Optional[float] = None
     pnl_pct: Optional[float] = None
     monitor_flag: Optional[str] = None
+    flag_since: Optional[float] = None  # when the current warning first appeared
 
 
 @dataclass
@@ -70,10 +80,14 @@ class TradeLogEntry:
 class PaperTradingEngine:
     def __init__(self, model: CrossoverModel,
                  on_close: Optional[Callable[[Position], None]] = None,
-                 on_log: Optional[Callable[[TradeLogEntry], None]] = None):
+                 on_log: Optional[Callable[[TradeLogEntry], None]] = None,
+                 monitor_grace_seconds: float = DEFAULT_MONITOR_GRACE_SECONDS,
+                 monitor_confirm_seconds: float = DEFAULT_MONITOR_CONFIRM_SECONDS):
         self.model = model
         self.on_close = on_close
         self.on_log = on_log
+        self.monitor_grace_seconds = monitor_grace_seconds
+        self.monitor_confirm_seconds = monitor_confirm_seconds
         self.open_positions: dict[tuple[Book, str], Position] = {}
         self.closed_positions: list[Position] = []
         self.trade_log: list[TradeLogEntry] = []
@@ -167,14 +181,20 @@ class PaperTradingEngine:
                 reason = "Stop-loss hit"
             elif elapsed >= CONFIG.max_hold_minutes * 60:
                 reason = "Max hold time reached"
-            elif book == Book.FILTERED and live_feat is not None and pos.entry_prob is not None:
+            elif (book == Book.FILTERED and live_feat is not None
+                  and pos.entry_prob is not None
+                  and elapsed >= self.monitor_grace_seconds):
                 flag = check_deterioration(self.model, pos.entry_feat, pos.entry_prob, live_feat)
                 if flag:
                     pos.monitor_flag = f"DETERIORATING: {flag}"
-                    if move_pct <= 0:
+                    if pos.flag_since is None:
+                        pos.flag_since = tick.ts
+                    persisted = tick.ts - pos.flag_since >= self.monitor_confirm_seconds
+                    if move_pct <= 0 and persisted:
                         reason = f"Deterioration exit ({flag})"
                 else:
                     pos.monitor_flag = None
+                    pos.flag_since = None
 
             if reason:
                 self._close(pos, tick.ltp, tick.ts, reason)

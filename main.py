@@ -113,8 +113,8 @@ class App:
         decision = None
         if event is not None:
             decision = self._decide(event)
-            self.trader.on_crossover(event, decision, tick.ltp)
-
+            # Entry time must come from the same clock as the exit checks.
+            self.trader.on_crossover(event, decision, tick.ltp, ts=tick.ts)
         self.trader.on_tick(tick, live_feat)
 
         # A crossover is a single-tick event, so signal/probability/decision/
