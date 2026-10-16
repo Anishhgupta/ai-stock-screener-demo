@@ -16,13 +16,20 @@ it only starts judging after a grace period (monitor_grace_seconds) and
 only exits when the warning has persisted for monitor_confirm_seconds.
 Hard exits (stop-loss, target, max hold) are never delayed.
 
+Positions still open when a session ends are closed by close_all(), at the
+last price seen for each symbol, so they are recorded instead of vanishing.
+Those exits carry the reason SESSION_END_REASON, so they can be told apart
+from real exits (they are marks to the last price, not fills).
+
 Persistence is optional and pluggable: pass `on_log` and/or `on_close`
 callbacks (see storage/repository.py) to record trade events. With no
 callbacks (the demo), everything stays in memory exactly as before.
 """
 from __future__ import annotations
 
+import functools
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -37,6 +44,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MONITOR_GRACE_SECONDS = 120.0
 DEFAULT_MONITOR_CONFIRM_SECONDS = 30.0
+SESSION_END_REASON = "Session end (marked at last price)"
+
+
+def _locked(method):
+    """Serialise engine calls: ticks arrive on the broker thread while the
+    main thread may call close_all() at shutdown."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class Book(str, Enum):
@@ -88,6 +106,8 @@ class PaperTradingEngine:
         self.on_log = on_log
         self.monitor_grace_seconds = monitor_grace_seconds
         self.monitor_confirm_seconds = monitor_confirm_seconds
+        self._lock = threading.RLock()
+        self._last_tick: dict[str, tuple[float, float]] = {}  # symbol -> (price, ts)
         self.open_positions: dict[tuple[Book, str], Position] = {}
         self.closed_positions: list[Position] = []
         self.trade_log: list[TradeLogEntry] = []
@@ -108,6 +128,7 @@ class PaperTradingEngine:
         except Exception:
             logger.exception("Persistence callback failed; trading continues")
 
+    @_locked
     def on_crossover(self, event, decision: Decision, live_ltp: float,
                      ts: Optional[float] = None):
         # `ts` MUST be the triggering tick's timestamp. Entry and exit
@@ -163,7 +184,9 @@ class PaperTradingEngine:
         )
         return None
 
+    @_locked
     def on_tick(self, tick: Tick, live_feat: Optional[FeatureSnapshot]):
+        self._last_tick[tick.symbol] = (tick.ltp, tick.ts)
         for book in (Book.BASIC, Book.FILTERED):
             key = (book, tick.symbol)
             pos = self.open_positions.get(key)
@@ -229,6 +252,20 @@ class PaperTradingEngine:
             outcome="WIN" if (pnl is not None and pnl > 0) else "LOSS", pnl=pnl,
         ))
         self._notify(self.on_close, pos)
+
+    @_locked
+    def close_all(self, reason: str = SESSION_END_REASON) -> int:
+        """
+        Close every open position at the last price seen for its symbol
+        (its entry price if no tick arrived since). Returns how many were
+        closed; calling it again returns 0.
+        """
+        closed = 0
+        for pos in list(self.open_positions.values()):
+            price, ts = self._last_tick.get(pos.symbol, (pos.entry_price, pos.entry_ts))
+            self._close(pos, price, ts, reason)
+            closed += 1
+        return closed
 
     def summary(self, book: Book) -> dict:
         closed = [p for p in self.closed_positions if p.book == book]

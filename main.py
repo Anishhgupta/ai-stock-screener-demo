@@ -243,6 +243,15 @@ class App:
             self._finish()
 
     def _finish(self):
+        # Positions still open when a session ends would otherwise vanish
+        # without ever being recorded. Close them at the last price seen.
+        closed = self.trader.close_all()
+        if closed:
+            print(f"Closed {closed} open position(s) at the last price (session end).")
+            try:
+                self._write_state()
+            except Exception:
+                logger.exception("Could not write the final dashboard state; continuing")
         report = save_report(self.trader, BASE_DIR / "reports" / "latest_report.json")
         print_report(report)
 
