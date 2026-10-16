@@ -70,6 +70,8 @@ class App:
             self.model,
             on_close=lambda pos: self.repo.record_closed_position(self.user_id, pos),
             on_log=lambda entry: self.repo.record_trade_log(self.user_id, entry),
+            on_crossover_event=lambda rec: self.repo.record_crossover(self.user_id, rec),
+            on_sample=lambda smp: self.repo.record_score_sample(self.user_id, smp),
         )
 
     def _build_broker(self, broker_name: str):

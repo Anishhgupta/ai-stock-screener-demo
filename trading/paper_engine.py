@@ -21,6 +21,10 @@ last price seen for each symbol, so they are recorded instead of vanishing.
 Those exits carry the reason SESSION_END_REASON, so they can be told apart
 from real exits (they are marks to the last price, not fills).
 
+Optionally the engine records every crossover (with its features) and
+re-scores each setup every few seconds for a while afterwards, so the
+stability of the model's verdict can be measured offline.
+
 Persistence is optional and pluggable: pass `on_log` and/or `on_close`
 callbacks (see storage/repository.py) to record trade events. With no
 callbacks (the demo), everything stays in memory exactly as before.
@@ -37,7 +41,7 @@ from typing import Callable, Optional
 
 from brokers.base import Tick
 from config import CONFIG
-from features.engineering import FeatureSnapshot
+from features.engineering import FEATURE_ORDER, FeatureSnapshot
 from ml.predict import CrossoverModel, Decision, check_deterioration
 
 logger = logging.getLogger(__name__)
@@ -45,6 +49,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_MONITOR_GRACE_SECONDS = 120.0
 DEFAULT_MONITOR_CONFIRM_SECONDS = 30.0
 SESSION_END_REASON = "Session end (marked at last price)"
+DEFAULT_SAMPLE_INTERVAL_SECONDS = 5.0
+DEFAULT_SAMPLE_WINDOW_SECONDS = 900.0
 
 
 def _locked(method):
@@ -60,6 +66,44 @@ def _locked(method):
 class Book(str, Enum):
     BASIC = "basic"
     FILTERED = "filtered"
+
+
+def _feature_dict(feat) -> dict:
+    """The model's input vector keyed by feature name ({} if unavailable)."""
+    if feat is None:
+        return {}
+    return dict(zip(FEATURE_ORDER, (float(v) for v in feat.to_feature_vector())))
+
+
+@dataclass
+class CrossoverRecord:
+    """Every crossover the engine sees, with the features the model scored."""
+    symbol: str
+    signal: str
+    ts: float
+    price: float
+    decision: str
+    probability: Optional[float]
+    features: dict
+
+
+@dataclass
+class ScoreSample:
+    """The model re-scored on a later tick of the same setup."""
+    symbol: str
+    signal: str
+    event_ts: float
+    ts: float
+    seconds_since_event: float
+    score: float
+    price: float
+
+
+@dataclass
+class _SamplingState:
+    event_ts: float
+    signal: str
+    last_ts: float
 
 
 @dataclass
@@ -100,10 +144,20 @@ class PaperTradingEngine:
                  on_close: Optional[Callable[[Position], None]] = None,
                  on_log: Optional[Callable[[TradeLogEntry], None]] = None,
                  monitor_grace_seconds: float = DEFAULT_MONITOR_GRACE_SECONDS,
-                 monitor_confirm_seconds: float = DEFAULT_MONITOR_CONFIRM_SECONDS):
+                 monitor_confirm_seconds: float = DEFAULT_MONITOR_CONFIRM_SECONDS,
+                 on_crossover_event: Optional[Callable[[CrossoverRecord], None]] = None,
+                 on_sample: Optional[Callable[[ScoreSample], None]] = None,
+                 sample_interval_seconds: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
+                 sample_window_seconds: float = DEFAULT_SAMPLE_WINDOW_SECONDS):
         self.model = model
         self.on_close = on_close
         self.on_log = on_log
+        self.on_crossover_event = on_crossover_event
+        self.on_sample = on_sample
+        self.sample_interval_seconds = sample_interval_seconds
+        self.sample_window_seconds = sample_window_seconds
+        self._sampling: dict[str, _SamplingState] = {}
+        self._sampling_disabled = False
         self.monitor_grace_seconds = monitor_grace_seconds
         self.monitor_confirm_seconds = monitor_confirm_seconds
         self._lock = threading.RLock()
@@ -138,6 +192,12 @@ class PaperTradingEngine:
         # close instantly at breakeven. Falls back to time.time() only
         # for callers that don't pass it (real-time feeds).
         symbol, signal = event.symbol, event.signal
+        event_ts = ts if ts is not None else time.time()
+        self._notify(self.on_crossover_event, CrossoverRecord(
+            symbol=symbol, signal=signal, ts=event_ts, price=live_ltp,
+            decision=decision.decision, probability=decision.probability,
+            features=_feature_dict(event.features),
+        ))
 
         skipped = self._open(Book.BASIC, symbol, signal, live_ltp, event.features,
                              entry_prob=None, ts=ts)
@@ -167,6 +227,13 @@ class PaperTradingEngine:
                 reasons=decision.reasons, outcome="AVOIDED",
             ))
 
+        # Re-score this setup on later ticks, so we can measure how stable
+        # the model's verdict really is (see storage/analysis.py).
+        if (self.on_sample is not None and symbol not in self._sampling
+                and any((b, symbol) in self.open_positions for b in Book)):
+            self._sampling[symbol] = _SamplingState(
+                event_ts=event_ts, signal=signal, last_ts=event_ts)
+
     def _open(self, book: Book, symbol: str, signal: str, price: float,
               feat: FeatureSnapshot, entry_prob: Optional[float],
               ts: Optional[float] = None) -> Optional[str]:
@@ -187,6 +254,7 @@ class PaperTradingEngine:
     @_locked
     def on_tick(self, tick: Tick, live_feat: Optional[FeatureSnapshot]):
         self._last_tick[tick.symbol] = (tick.ltp, tick.ts)
+        self._maybe_sample(tick, live_feat)
         for book in (Book.BASIC, Book.FILTERED):
             key = (book, tick.symbol)
             pos = self.open_positions.get(key)
@@ -221,6 +289,30 @@ class PaperTradingEngine:
 
             if reason:
                 self._close(pos, tick.ltp, tick.ts, reason)
+
+    def _maybe_sample(self, tick: Tick, live_feat: Optional[FeatureSnapshot]):
+        state = self._sampling.get(tick.symbol)
+        if state is None:
+            return
+        still_open = any((b, tick.symbol) in self.open_positions for b in Book)
+        if not still_open or tick.ts - state.event_ts > self.sample_window_seconds:
+            del self._sampling[tick.symbol]
+            return
+        if (live_feat is None or self.model is None or self._sampling_disabled
+                or tick.ts - state.last_ts < self.sample_interval_seconds):
+            return
+        state.last_ts = tick.ts
+        try:
+            score = float(self.model.score(live_feat))
+        except Exception:
+            logger.exception("Score sampling failed; switching it off for this run")
+            self._sampling_disabled = True
+            return
+        self._notify(self.on_sample, ScoreSample(
+            symbol=tick.symbol, signal=state.signal, event_ts=state.event_ts,
+            ts=tick.ts, seconds_since_event=tick.ts - state.event_ts,
+            score=score, price=tick.ltp,
+        ))
 
     def _close(self, pos: Position, price: float, ts: float, reason: str):
         direction = 1 if pos.signal == "BUY" else -1

@@ -15,7 +15,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from storage.db import Base
-from storage.models import LiveSnapshot, PaperPosition, TradeLogRow, User
+from storage.models import (
+    CrossoverEvent, LiveSnapshot, PaperPosition, ScoreSample, TradeLogRow, User,
+)
 
 
 class Repository:
@@ -64,6 +66,26 @@ class Repository:
             ))
             session.commit()
 
+    def record_crossover(self, user_id: int, rec) -> None:
+        """`rec` is a trading.paper_engine.CrossoverRecord."""
+        with self._sessions() as session:
+            session.add(CrossoverEvent(
+                user_id=user_id, symbol=rec.symbol, signal=rec.signal, ts=rec.ts,
+                price=rec.price, decision=rec.decision, probability=rec.probability,
+                features=json.dumps(rec.features),
+            ))
+            session.commit()
+
+    def record_score_sample(self, user_id: int, sample) -> None:
+        """`sample` is a trading.paper_engine.ScoreSample."""
+        with self._sessions() as session:
+            session.add(ScoreSample(
+                user_id=user_id, symbol=sample.symbol, event_ts=sample.event_ts,
+                ts=sample.ts, seconds_since_event=sample.seconds_since_event,
+                score=sample.score, price=sample.price,
+            ))
+            session.commit()
+
     def save_live_snapshot(self, user_id: int, state: dict) -> None:
         """Overwrite this user's single live-state row."""
         payload = json.dumps(state, default=str)
@@ -82,6 +104,30 @@ class Repository:
         with self._sessions() as session:
             row = session.get(LiveSnapshot, user_id)
         return json.loads(row.payload) if row is not None else None
+
+    def crossover_events(self, user_id: int) -> List[dict]:
+        query = (select(CrossoverEvent).where(CrossoverEvent.user_id == user_id)
+                 .order_by(CrossoverEvent.id))
+        with self._sessions() as session:
+            rows = list(session.scalars(query))
+        return [
+            {"symbol": r.symbol, "signal": r.signal, "ts": r.ts, "price": r.price,
+             "decision": r.decision, "probability": r.probability,
+             "features": json.loads(r.features)}
+            for r in rows
+        ]
+
+    def score_samples(self, user_id: int) -> List[dict]:
+        query = (select(ScoreSample).where(ScoreSample.user_id == user_id)
+                 .order_by(ScoreSample.id))
+        with self._sessions() as session:
+            rows = list(session.scalars(query))
+        return [
+            {"symbol": r.symbol, "event_ts": r.event_ts, "ts": r.ts,
+             "seconds_since_event": r.seconds_since_event, "score": r.score,
+             "price": r.price}
+            for r in rows
+        ]
 
     def closed_positions(self, user_id: int, book: Optional[str] = None) -> List[PaperPosition]:
         query = select(PaperPosition).where(PaperPosition.user_id == user_id)

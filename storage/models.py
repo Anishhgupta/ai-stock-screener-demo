@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from sqlalchemy import Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from storage.db import Base
@@ -73,3 +73,33 @@ class LiveSnapshot(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     updated_at: Mapped[float] = mapped_column(Float)
     payload: Mapped[str] = mapped_column(Text)  # JSON-encoded state dict
+
+
+class CrossoverEvent(Base):
+    """Every crossover seen, with the features the model scored (JSON)."""
+    __tablename__ = "crossover_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    signal: Mapped[str] = mapped_column(String(8))
+    ts: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    decision: Mapped[str] = mapped_column(String(16))
+    probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    features: Mapped[str] = mapped_column(Text)  # JSON {feature name: value}
+
+
+class ScoreSample(Base):
+    """The model re-scored on a later tick of a crossover's setup."""
+    __tablename__ = "score_samples"
+    __table_args__ = (Index("ix_score_samples_event", "user_id", "symbol", "event_ts"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    symbol: Mapped[str] = mapped_column(String(32))
+    event_ts: Mapped[float] = mapped_column(Float)   # ts of the crossover it belongs to
+    ts: Mapped[float] = mapped_column(Float)
+    seconds_since_event: Mapped[float] = mapped_column(Float)
+    score: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
