@@ -85,7 +85,9 @@ A Windows `.exe` can be built with `build_exe.py` (PyInstaller).
 
 ## Saved history
 
-Paper trades and decisions go to a local SQLite database (`data/store/screener.db`). Set `SCREENER_DB_URL` to use another database such as Postgres. The dashboard shows live state plus all-time totals, the latest closed trades and the latest decisions, with reasons. Tables: `users`, `paper_positions`, `trade_log`, `live_snapshots`. Every row carries a `user_id`, so moving to multiple users later does not change the data model.
+Paper trades and decisions go to a local SQLite database (`data/store/screener.db`; in Docker, a named volume). Set `SCREENER_DB_URL` to use another database such as Postgres. The dashboard shows live state plus all-time totals, the latest closed trades and the latest decisions, with reasons. Tables: `users`, `paper_positions`, `trade_log`, `live_snapshots`, `crossover_events` and `score_samples`. Every row carries a `user_id`, so moving to multiple users later does not change the data model.
+
+The engine records every crossover with the features the model scored, then re-scores each setup every 5 seconds for up to 15 minutes. `python -m storage.analysis` compares the entry score with those later scores and reports how often a later score would have reversed the ACCEPT/AVOID verdict. In Docker: `docker compose --profile live run --rm dashboard python -m storage.analysis`.
 
 ## Testing
 
@@ -94,7 +96,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-90 automated tests run on every push through GitHub Actions. They cover the SMMA maths, candle aggregation, feature engineering, the depth screen, the crossover pipeline, the paper-trading engine, the storage layer and the dashboard's data logic. Several are regression tests for real bugs listed below, and each was checked by deliberately breaking the code to confirm it fails.
+130 automated tests run on every push through GitHub Actions. They cover the SMMA maths, candle aggregation, feature engineering, the depth screen, the crossover pipeline, the paper-trading engine, session-end handling, score tracing, the storage layer and the dashboard's data logic. Several are regression tests for real bugs listed below, and each was checked by deliberately breaking the code to confirm it fails.
 
 ## Bugs found and fixed
 
@@ -110,14 +112,16 @@ Real debugging, documented rather than hidden:
 - **Startup race on user creation:** the trading process and the dashboard could both create the default user at once. Caught by a multi-threaded test and fixed with insert-then-handle-conflict.
 - **Model portability:** `joblib` models are not guaranteed to load across scikit-learn versions. Retrain locally or pin matching versions (the Docker image pins them).
 - **Deterioration monitor closed trades within a second:** found on a live run. The monitor re-scored the model on every tick, and the score swung by 19 to 86 points between consecutive ticks, so all three ACCEPTed trades were closed in the same second they opened. The monitor now waits 120 seconds and only exits on a warning that persists for 30 seconds.
+- **Open positions vanished at shutdown:** positions still open when a session ended were discarded and never recorded, leaving the history incomplete. They are now closed at the last price seen and labelled as session-end marks.
 
 ## Known limitations
 
-- Open positions live in memory. Positions still open when a session ends are discarded, not recorded.
+- Positions still open when a session ends are closed at the last price seen and labelled `Session end (marked at last price)`. These are marks, not fills. A crash or power loss still loses open positions.
 - Carried-forward decisions are not restored after a restart until each symbol's next crossover.
 - The Fyers access token must be regenerated every trading day.
+- The model is trained on a small sample (78 real crossovers). Its score for the same setup can move by tens of points within seconds on real data, and the score-stability analysis is collecting data to measure that.
+- Live paper-trading results so far cover a few sessions and a few dozen trades, far too few to judge the strategy.
 - The Docker setup keeps its own database, separate from a local run's.
-- Model scores are unstable between consecutive ticks, so an ACCEPT can depend on single-tick noise. The model is trained on a small sample and needs more data and a stability check before its results mean anything.
 
 ## Tech stack
 
