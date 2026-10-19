@@ -14,7 +14,9 @@ def test_crossovers_are_detected_from_synthetic_ticks():
     random.seed(7)
     symbols = ["NSE:TATAMOTORS-EQ", "NSE:SBIN-EQ"]
     client = MockClient(symbols, tick_interval=0.0)  # no sleep, just generate fast
-    engine = CrossoverEngine()
+    # persist_ticks=False: this test must never write mock ticks into the
+    # real data/store tick files (it once did, on every run).
+    engine = CrossoverEngine(persist_ticks=False)
 
     events = []
     captured = []

@@ -15,7 +15,7 @@ A Python real-time screening and paper-trading system for NSE equities. It detec
 The hosted demo runs the **same engine** as the live system (crossover detection, feature engineering, ML filter, paper-trading books) on a **synthetic price feed**, so it works instantly with no broker credentials.
 
 - Prices in the demo are a random walk, so no model can have a real edge there. The demo shows the pipeline mechanics, not trading performance.
-- Real results come from live Fyers data collected over multiple trading days (Aug 31 to Sep 14, 2026): 78 real crossovers were combined to train the first properly sized model, with AUC improving from 0.500 to 0.582. That is a small sample and a modest result, reported as it is.
+- The model was first trained on a small sample from early live Fyers sessions in August and September 2026. That training data is being audited for duplicated and mock-contaminated rows, so no performance figure is quoted here until the model is rebuilt from verified data.
 
 ## How it works
 
@@ -119,7 +119,7 @@ Real debugging, documented rather than hidden:
 - Positions still open when a session ends are closed at the last price seen and labelled `Session end (marked at last price)`. These are marks, not fills. A crash or power loss still loses open positions.
 - Carried-forward decisions are not restored after a restart until each symbol's next crossover.
 - The Fyers access token must be regenerated every trading day.
-- The model is trained on a small sample (78 real crossovers). Its score for the same setup can move by tens of points within seconds on real data, and the score-stability analysis is collecting data to measure that.
+- The model's training data is small, and its provenance is being re-audited (duplicated sessions and mock rows were found in some saved tick files). Its score for the same setup can move by tens of points within seconds on real data; the score-stability analysis is collecting data to measure that.
 - Live paper-trading results so far cover a few sessions and a few dozen trades, far too few to judge the strategy.
 - The Docker setup keeps its own database, separate from a local run's.
 
