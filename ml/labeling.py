@@ -81,7 +81,10 @@ def build_training_set_from_ticks(ticks: List[Tick], engine: Optional[CrossoverE
         ticks_by_symbol.setdefault(t.symbol, []).append(t)
 
     if engine is None:
-        engine = CrossoverEngine()
+        # persist_ticks=False: reading ticks to build a training set must never
+        # write them back into data/store (it once re-appended every tick to
+        # today's tick file on each training run).
+        engine = CrossoverEngine(persist_ticks=False)
     events = []
 
     for t in ticks:
