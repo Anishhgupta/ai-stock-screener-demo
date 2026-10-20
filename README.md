@@ -15,7 +15,7 @@ A Python real-time screening and paper-trading system for NSE equities. It detec
 The hosted demo runs the **same engine** as the live system (crossover detection, feature engineering, ML filter, paper-trading books) on a **synthetic price feed**, so it works instantly with no broker credentials.
 
 - Prices in the demo are a random walk, so no model can have a real edge there. The demo shows the pipeline mechanics, not trading performance.
-- The model was first trained on a small sample from early live Fyers sessions in August and September 2026. That training data is being audited for duplicated and mock-contaminated rows, so no performance figure is quoted here until the model is rebuilt from verified data.
+- The model was trained on 78 labelled crossovers from six early live Fyers files (some of which overlap, so some crossovers are probably counted twice). On a 16-example validation set it reached an AUC of 0.58, which is statistically indistinguishable from chance (p ≈ 0.33; 95% interval roughly 0.27 to 0.90). Treat it as a demonstration of the pipeline, not a trading edge. It will be retrained on cleaned, de-duplicated data as sessions accumulate.
 
 ## How it works
 
@@ -113,13 +113,14 @@ Real debugging, documented rather than hidden:
 - **Model portability:** `joblib` models are not guaranteed to load across scikit-learn versions. Retrain locally or pin matching versions (the Docker image pins them).
 - **Deterioration monitor closed trades within a second:** found on a live run. The monitor re-scored the model on every tick, and the score swung by 19 to 86 points between consecutive ticks, so all three ACCEPTed trades were closed in the same second they opened. The monitor now waits 120 seconds and only exits on a warning that persists for 30 seconds.
 - **Open positions vanished at shutdown:** positions still open when a session ended were discarded and never recorded, leaving the history incomplete. They are now closed at the last price seen and labelled as session-end marks.
+- **Training and tests polluted the real tick files:** building a training set (and one end-to-end test) created the crossover engine with tick saving on, so every run re-appended all the ticks it read to that day's tick file. Saved files grew to gigabytes with duplicated sessions and mock rows. Training and the test now never write there, and a test guard fails loudly if any test tries.
 
 ## Known limitations
 
 - Positions still open when a session ends are closed at the last price seen and labelled `Session end (marked at last price)`. These are marks, not fills. A crash or power loss still loses open positions.
 - Carried-forward decisions are not restored after a restart until each symbol's next crossover.
 - The Fyers access token must be regenerated every trading day.
-- The model's training data is small, and its provenance is being re-audited (duplicated sessions and mock rows were found in some saved tick files). Its score for the same setup can move by tens of points within seconds on real data; the score-stability analysis is collecting data to measure that.
+- The model's training sample is tiny and partly duplicated, its validation AUC is indistinguishable from chance, and its score for the same setup can move by tens of points within seconds on real data. Its probabilities should not be read as confidence.
 - Live paper-trading results so far cover a few sessions and a few dozen trades, far too few to judge the strategy.
 - The Docker setup keeps its own database, separate from a local run's.
 
