@@ -57,7 +57,7 @@ def build_warmstarted_engine(broker_name: str, symbols: list[str], tick_csv_path
     print(f"Connecting to {broker_name} to fetch historical candles...")
     client.connect()
 
-    engine = CrossoverEngine()
+    engine = CrossoverEngine(persist_ticks=False)
     warmed = 0
     for symbol in symbols:
         try:
