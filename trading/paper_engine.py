@@ -25,6 +25,9 @@ Optionally the engine records every crossover (with its features) and
 re-scores each setup every few seconds for a while afterwards, so the
 stability of the model's verdict can be measured offline.
 
+Open positions can be saved as they open (on_open) and put back after a
+crash or restart (restore_position), so a restart does not lose them.
+
 Persistence is optional and pluggable: pass `on_log` and/or `on_close`
 callbacks (see storage/repository.py) to record trade events. With no
 callbacks (the demo), everything stays in memory exactly as before.
@@ -73,6 +76,35 @@ def _feature_dict(feat) -> dict:
     if feat is None:
         return {}
     return dict(zip(FEATURE_ORDER, (float(v) for v in feat.to_feature_vector())))
+
+
+class StoredFeatures:
+    """
+    Entry features restored from storage. It carries every model input by
+    name, which is all the deterioration monitor reads from them. Features
+    that were not saved default to 0.0.
+    """
+
+    def __init__(self, values: Optional[dict] = None):
+        values = values or {}
+        for name in FEATURE_ORDER:
+            setattr(self, name, float(values.get(name, 0.0)))
+
+    def to_feature_vector(self) -> list:
+        return [getattr(self, name) for name in FEATURE_ORDER]
+
+
+@dataclass
+class OpenPositionRecord:
+    """A position that has just opened, in a form that can be saved and restored."""
+    book: str
+    symbol: str
+    signal: str
+    qty: int
+    entry_price: float
+    entry_ts: float
+    entry_prob: Optional[float]
+    features: dict
 
 
 @dataclass
@@ -148,10 +180,12 @@ class PaperTradingEngine:
                  on_crossover_event: Optional[Callable[[CrossoverRecord], None]] = None,
                  on_sample: Optional[Callable[[ScoreSample], None]] = None,
                  sample_interval_seconds: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
-                 sample_window_seconds: float = DEFAULT_SAMPLE_WINDOW_SECONDS):
+                 sample_window_seconds: float = DEFAULT_SAMPLE_WINDOW_SECONDS,
+                 on_open: Optional[Callable[[OpenPositionRecord], None]] = None):
         self.model = model
         self.on_close = on_close
         self.on_log = on_log
+        self.on_open = on_open
         self.on_crossover_event = on_crossover_event
         self.on_sample = on_sample
         self.sample_interval_seconds = sample_interval_seconds
@@ -244,12 +278,46 @@ class PaperTradingEngine:
         if sum(1 for (b, _) in self.open_positions if b == book) >= CONFIG.max_concurrent_positions:
             return "Max concurrent positions reached"
         qty = max(1, int(CONFIG.capital_per_trade // price))
-        self.open_positions[key] = Position(
+        position = Position(
             book=book, symbol=symbol, signal=signal, entry_price=price,
             entry_ts=ts if ts is not None else time.time(),
             qty=qty, entry_feat=feat, entry_prob=entry_prob,
         )
+        self.open_positions[key] = position
+        self._notify(self.on_open, OpenPositionRecord(
+            book=book.value, symbol=symbol, signal=signal, qty=qty, entry_price=price,
+            entry_ts=position.entry_ts, entry_prob=entry_prob, features=_feature_dict(feat),
+        ))
         return None
+
+    @_locked
+    def restore_position(self, row: dict) -> Optional[Position]:
+        """
+        Put back a position saved before a crash or restart. It is not saved
+        again (it already is). Returns None if that book/symbol is open.
+        """
+        book = Book(row["book"])
+        key = (book, row["symbol"])
+        if key in self.open_positions:
+            return None
+        position = Position(
+            book=book, symbol=row["symbol"], signal=row["signal"],
+            entry_price=row["entry_price"], entry_ts=row["entry_ts"], qty=row["qty"],
+            entry_feat=StoredFeatures(row.get("features")),
+            entry_prob=row.get("entry_prob"),
+        )
+        self.open_positions[key] = position
+        return position
+
+    @_locked
+    def close_position(self, book: Book, symbol: str, price: float, ts: float,
+                       reason: str) -> bool:
+        """Close one open position at a given price. False if it is not open."""
+        pos = self.open_positions.get((book, symbol))
+        if pos is None:
+            return False
+        self._close(pos, price, ts, reason)
+        return True
 
     @_locked
     def on_tick(self, tick: Tick, live_feat: Optional[FeatureSnapshot]):
@@ -344,6 +412,11 @@ class PaperTradingEngine:
             outcome="WIN" if (pnl is not None and pnl > 0) else "LOSS", pnl=pnl,
         ))
         self._notify(self.on_close, pos)
+
+    @_locked
+    def latest_tick_ts(self) -> Optional[float]:
+        """Timestamp of the newest tick seen on any symbol (None before the first)."""
+        return max((ts for _, ts in self._last_tick.values()), default=None)
 
     @_locked
     def close_all(self, reason: str = SESSION_END_REASON) -> int:

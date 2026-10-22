@@ -9,14 +9,14 @@ import json
 import time
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from storage.db import Base
 from storage.models import (
-    CrossoverEvent, LiveSnapshot, PaperPosition, ScoreSample, TradeLogRow, User,
+    CrossoverEvent, LiveSnapshot, OpenPosition, PaperPosition, ScoreSample, TradeLogRow, User,
 )
 
 
@@ -41,8 +41,27 @@ class Repository:
             return session.scalar(select(User.id).where(User.username == username))
 
     # ---------------------------------------------------------- writes
+    def save_open_position(self, user_id: int, rec) -> None:
+        """
+        `rec` is a trading.paper_engine.OpenPositionRecord. Replaces any stale
+        row for the same book and symbol (one open position per book/symbol).
+        """
+        with self._sessions() as session:
+            session.execute(delete(OpenPosition).where(
+                OpenPosition.user_id == user_id, OpenPosition.book == rec.book,
+                OpenPosition.symbol == rec.symbol))
+            session.add(OpenPosition(
+                user_id=user_id, book=rec.book, symbol=rec.symbol, signal=rec.signal,
+                qty=rec.qty, entry_price=rec.entry_price, entry_ts=rec.entry_ts,
+                entry_prob=rec.entry_prob, features=json.dumps(rec.features),
+            ))
+            session.commit()
+
     def record_closed_position(self, user_id: int, pos) -> None:
-        """`pos` is a trading.paper_engine.Position that has been closed."""
+        """
+        `pos` is a trading.paper_engine.Position that has been closed. Closing
+        also removes its saved open-position row, in the same transaction.
+        """
         if pos.pnl is None or pos.exit_price is None or pos.exit_ts is None:
             raise ValueError("record_closed_position needs a closed position")
         with self._sessions() as session:
@@ -53,6 +72,10 @@ class Repository:
                 exit_price=pos.exit_price, exit_ts=pos.exit_ts,
                 exit_reason=pos.exit_reason or "", pnl=pos.pnl, pnl_pct=pos.pnl_pct or 0.0,
             ))
+            session.execute(delete(OpenPosition).where(
+                OpenPosition.user_id == user_id,
+                OpenPosition.book == _book_value(pos.book),
+                OpenPosition.symbol == pos.symbol))
             session.commit()
 
     def record_trade_log(self, user_id: int, entry) -> None:
@@ -100,6 +123,18 @@ class Repository:
             session.commit()
 
     # ----------------------------------------------------------- reads
+    def load_open_positions(self, user_id: int) -> List[dict]:
+        query = (select(OpenPosition).where(OpenPosition.user_id == user_id)
+                 .order_by(OpenPosition.id))
+        with self._sessions() as session:
+            rows = list(session.scalars(query))
+        return [
+            {"book": r.book, "symbol": r.symbol, "signal": r.signal, "qty": r.qty,
+             "entry_price": r.entry_price, "entry_ts": r.entry_ts,
+             "entry_prob": r.entry_prob, "features": json.loads(r.features)}
+            for r in rows
+        ]
+
     def load_live_snapshot(self, user_id: int) -> Optional[dict]:
         with self._sessions() as session:
             row = session.get(LiveSnapshot, user_id)

@@ -19,6 +19,7 @@ from trading.paper_engine import SESSION_END_REASON, Book, PaperTradingEngine
 
 PRICE = 100.0
 START = 1_800_000_000.0
+AFTER_CLOSE = START + 2 * 3600    # 15:30 IST: the market has closed
 
 
 def make_tick(ts, ltp, symbol="AAA"):
@@ -175,8 +176,8 @@ def app(monkeypatch, tmp_path):
     a._last_tick_at = time.time()
     a.trader = a._make_trader(True, f"sqlite:///{tmp_path / 'main.db'}")
     a.reports = reports
-    a.handle_tick(make_tick(START, PRICE))
-    a.handle_tick(make_tick(START + 5, small_move(0.5)))
+    a.handle_tick(make_tick(AFTER_CLOSE, PRICE))
+    a.handle_tick(make_tick(AFTER_CLOSE + 5, small_move(0.5)))
     return a
 
 

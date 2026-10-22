@@ -11,8 +11,9 @@ Once you have a trained model and real broker creds exported as env vars:
     python main.py --broker angelone
 
 Paper trades and the decision log are saved to a local SQLite database
-(data/store/screener.db) so history survives restarts. Set SCREENER_DB_URL
-to use another database, or pass --no-db to run without persistence.
+(data/store/screener.db) so history survives restarts. Open positions are
+saved too, and resumed after a crash or restart. Set SCREENER_DB_URL to use
+another database, or pass --no-db to run without persistence.
 
 The dashboard (Streamlit) reads the live snapshot this script saves to the
 database about once a second (state.json is still written as a fallback) --
@@ -27,6 +28,7 @@ import logging
 import signal as os_signal
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -48,6 +50,16 @@ from trading.paper_engine import PaperTradingEngine, Book
 STATE_PATH = BASE_DIR / "dashboard" / "state.json"
 logger = logging.getLogger(__name__)
 
+IST = timezone(timedelta(hours=5, minutes=30))
+MARKET_CLOSE_IST = (15, 30)   # NSE cash market close, hour and minute in Indian time
+RECOVERED_REASON = "Recovered after restart (marked at last snapshot price)"
+RECOVERED_FLAT_REASON = "Recovered after restart (no price available, marked flat)"
+
+
+def _ist_date(epoch_seconds: float):
+    """The Indian calendar date of a timestamp: the trading day it belongs to."""
+    return datetime.fromtimestamp(epoch_seconds, IST).date()
+
 
 class App:
     def __init__(self, broker_name: str, use_db: bool = True, db_url: str | None = None):
@@ -58,6 +70,7 @@ class App:
         self._last_state_write = 0.0
         self._latest_by_symbol: dict[str, dict] = {}
         self._last_tick_at: float = time.time()
+        self._restore_after_restart()
 
     def _make_trader(self, use_db: bool, db_url: str | None = None) -> PaperTradingEngine:
         """Paper-trading engine, optionally wired to the database."""
@@ -72,7 +85,56 @@ class App:
             on_log=lambda entry: self.repo.record_trade_log(self.user_id, entry),
             on_crossover_event=lambda rec: self.repo.record_crossover(self.user_id, rec),
             on_sample=lambda smp: self.repo.record_score_sample(self.user_id, smp),
+            on_open=lambda rec: self.repo.save_open_position(self.user_id, rec),
         )
+
+    def _restore_after_restart(self, now: float | None = None):
+        """
+        Pick up where a crashed or restarted session left off:
+          * positions saved as open on today's trading day are put back;
+          * positions left open on an earlier day (a crash nobody recovered)
+            are closed at the last snapshot price and recorded;
+          * today's carried-forward signals and decisions come back.
+        """
+        if self.repo is None:
+            return
+        now = time.time() if now is None else now
+        today = _ist_date(now)
+        snapshot = self.repo.load_live_snapshot(self.user_id) or {}
+        snapshot_rows = snapshot.get("symbols", {})
+        snapshot_ts = snapshot.get("updated_at")
+
+        restored = recovered = 0
+        for row in self.repo.load_open_positions(self.user_id):
+            try:
+                if _ist_date(row["entry_ts"]) == today:
+                    if self.trader.restore_position(row) is not None:
+                        restored += 1
+                    continue
+                self.trader.restore_position(row)
+                price = (snapshot_rows.get(row["symbol"]) or {}).get("ltp")
+                if price is not None and snapshot_ts is not None:
+                    reason, exit_price, exit_ts = RECOVERED_REASON, float(price), float(snapshot_ts)
+                else:
+                    reason, exit_price, exit_ts = (
+                        RECOVERED_FLAT_REASON, row["entry_price"], row["entry_ts"])
+                if self.trader.close_position(Book(row["book"]), row["symbol"],
+                                              exit_price, exit_ts, reason):
+                    recovered += 1
+            except Exception:
+                logger.exception("Could not restore the saved open position %s; skipping it", row)
+
+        if snapshot_ts is not None and _ist_date(snapshot_ts) == today:
+            for symbol, r in snapshot_rows.items():
+                if r.get("decision") is not None:
+                    self._latest_by_symbol[symbol] = {
+                        k: r.get(k) for k in ("signal", "probability", "decision", "reasons")}
+
+        if restored:
+            print(f"Restored {restored} open position(s) saved before the restart.")
+        if recovered:
+            print(f"Closed {recovered} position(s) left open by an earlier crash, "
+                  "at the last snapshot price.")
 
     def _build_broker(self, broker_name: str):
         if broker_name == "angelone":
@@ -117,6 +179,7 @@ class App:
             decision = self._decide(event)
             # Entry time must come from the same clock as the exit checks.
             self.trader.on_crossover(event, decision, tick.ltp, ts=tick.ts)
+
         self.trader.on_tick(tick, live_feat)
 
         # A crossover is a single-tick event, so signal/probability/decision/
@@ -244,16 +307,31 @@ class App:
             self.broker.disconnect()
             self._finish()
 
+    def _session_is_over(self) -> bool:
+        """True once the newest tick seen is from the close of the trading day."""
+        last = self.trader.latest_tick_ts()
+        if last is None:
+            return False
+        moment = datetime.fromtimestamp(last, IST)
+        return (moment.hour, moment.minute) >= MARKET_CLOSE_IST
+
     def _finish(self):
-        # Positions still open when a session ends would otherwise vanish
-        # without ever being recorded. Close them at the last price seen.
-        closed = self.trader.close_all()
-        if closed:
-            print(f"Closed {closed} open position(s) at the last price (session end).")
-            try:
-                self._write_state()
-            except Exception:
-                logger.exception("Could not write the final dashboard state; continuing")
+        if self._session_is_over():
+            # The trading day is over. Positions still open would otherwise
+            # vanish without ever being recorded, so close them at the last
+            # price seen.
+            closed = self.trader.close_all()
+            if closed:
+                print(f"Closed {closed} open position(s) at the last price (session end).")
+                try:
+                    self._write_state()
+                except Exception:
+                    logger.exception("Could not write the final dashboard state; continuing")
+        elif self.trader.open_positions:
+            # Stopped in the middle of the session (a restart, a rebuild, a
+            # shutdown): keep the saved positions so the next start resumes them.
+            print(f"Leaving {len(self.trader.open_positions)} open position(s) saved "
+                  "so the next start can resume them.")
         report = save_report(self.trader, BASE_DIR / "reports" / "latest_report.json")
         print_report(report)
 

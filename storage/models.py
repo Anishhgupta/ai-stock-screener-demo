@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from storage.db import Base
@@ -42,6 +42,26 @@ class PaperPosition(Base):
     exit_reason: Mapped[str] = mapped_column(String(160))
     pnl: Mapped[float] = mapped_column(Float)
     pnl_pct: Mapped[float] = mapped_column(Float)
+
+
+class OpenPosition(Base):
+    """
+    A position that is open right now, saved so that a crash or restart can
+    resume it instead of losing it. Removed when the position closes.
+    """
+    __tablename__ = "open_positions"
+    __table_args__ = (UniqueConstraint("user_id", "book", "symbol", name="uq_open_position"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    book: Mapped[str] = mapped_column(String(16))
+    symbol: Mapped[str] = mapped_column(String(32))
+    signal: Mapped[str] = mapped_column(String(8))
+    qty: Mapped[int] = mapped_column(Integer)
+    entry_price: Mapped[float] = mapped_column(Float)
+    entry_ts: Mapped[float] = mapped_column(Float)
+    entry_prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    features: Mapped[str] = mapped_column(Text)  # JSON {feature name: value}
 
 
 class TradeLogRow(Base):
