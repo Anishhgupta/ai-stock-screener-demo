@@ -145,7 +145,7 @@ pytest
 
 ## What I found
 
-This project is mostly a record of things that looked right and were not. The four findings that taught me the most:
+This project is mostly a record of things that looked right and were not. The five findings that taught me the most:
 
 **1. A "win rate" that was really a clock bug.** In the demo, every trade closed instantly at breakeven. Positions were stamped with wall-clock time, but exits were compared against an accelerated simulated clock, so every trade looked like it had been held past the max hold time. The fix was to use the triggering tick's timestamp everywhere, and it is now a rule: entry and exit logic only ever use the tick clock.
 
@@ -173,13 +173,13 @@ Real debugging, documented rather than hidden:
 - **Deterioration monitor closed trades within a second:** found on a live run. The monitor re-scored the model on every tick, and the score swung by 19 to 86 points between consecutive ticks, so all three ACCEPTed trades were closed in the same second they opened. The monitor now waits 120 seconds and only exits on a warning that persists for 30 seconds.
 - **Open positions vanished at shutdown:** positions still open when a session ended were discarded and never recorded, leaving the history incomplete. They are now closed at the last price seen and labelled as session-end marks.
 - **Training and tests polluted the real tick files:** building a training set (and one end-to-end test) created the crossover engine with tick saving on, so every run re-appended all the ticks it read to that day's tick file. Saved files grew to gigabytes with duplicated sessions and mock rows. Training and the test now never write there, and a test guard fails loudly if any test tries.
-- **Open positions and decisions lost on crash or restart:** open positions are now saved and restored, and carried decisions are restored from the last snapshot. A mid-session stop no longer force-closes positions.
+- **Restarts lost open positions:** open positions and the dashboard's carried decisions lived only in memory, so a PC restart mid-session discarded them. Positions are now saved when they open, resumed on startup, and recovered (and labelled) if a crash left them open overnight.
 
 ## Known limitations
 
-- Positions closed by `Session end` or `Recovered after restart` are marks at the last known price, not real fills. Analyses should filter on those reasons.
+- Open positions are saved as they open and resumed after a crash or restart on the same trading day. Positions still open after the 15:30 IST close are closed at the last price and labelled `Session end (marked at last price)`; these are marks, not fills. Ticks missed while the program was down are not replayed, so a stop or target crossed during the downtime fires at the first live price after the restart.
+- Positions closed as `Recovered after restart` are also marks, not fills. Analyses should filter on both this reason and `Session end`.
 - Restart recovery is covered by automated tests, but has not yet been exercised by killing the screener during a live market session.
-- Ticks that arrive while the screener is down are not replayed.
 - The Fyers access token must be regenerated every trading day.
 - The model's training sample is tiny and partly duplicated, its validation AUC is indistinguishable from chance, and its score for the same setup can move by tens of points within seconds on real data. Its probabilities should not be read as confidence.
 - Live paper-trading results so far cover a few sessions and a few dozen trades, far too few to judge the strategy. The comparison of the Filtered book against Basic is not statistically meaningful yet.
