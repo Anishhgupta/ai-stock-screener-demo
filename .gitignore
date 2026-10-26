@@ -37,3 +37,4 @@ __pycache__/
 *.db-wal
 *.db-shmmcp_bridge.py
 tick_report.txt
+mcp_bridge.py

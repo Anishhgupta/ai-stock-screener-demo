@@ -17,6 +17,12 @@ The hosted demo runs the **same engine** as the live system (crossover detection
 - Prices in the demo are a random walk, so no model can have a real edge there. The demo shows the pipeline mechanics, not trading performance.
 - The model was trained on 78 labelled crossovers from six early live Fyers files (some of which overlap, so some crossovers are probably counted twice). On a 16-example validation set it reached an AUC of 0.58, which is statistically indistinguishable from chance (p ≈ 0.33; 95% interval roughly 0.27 to 0.90). Treat it as a demonstration of the pipeline, not a trading edge. It will be retrained on cleaned, de-duplicated data as sessions accumulate.
 
+## Live dashboard
+
+![Live dashboard](docs/live_dashboard.png)
+
+*One live Fyers session (26 Oct 2026), captured mid-session. The tiles count only trades closed since the program last started. The Basic tile's 8 trades (8 wins) are a small, correlated sample, and its 100% win rate is not a performance claim: later that day the Basic book took a ₹882 stop-loss and a ₹264 loss on a max-hold exit. The "All-time (saved)" lines under the tiles come from the database and are the better guide: Basic 87 trades, 46% win rate, −₹2,126; Filtered 41 trades, 15% win rate, +₹583. Row colours show each symbol's latest ACCEPT/AVOID decision, carried forward until its next crossover.*
+
 ## Architecture
 
 ```mermaid
@@ -125,6 +131,7 @@ Tables: `users`, `paper_positions` (closed trades), `open_positions`, `trade_log
 - On startup, positions saved earlier **the same IST day** are restored and keep running, along with the carried-forward decisions from the last dashboard snapshot.
 - Positions left over from an **earlier day** are closed and labelled `Recovered after restart (marked at last snapshot price)`.
 - A stop in the middle of the session leaves positions saved for the next start. Positions are only closed as `Session end` when the newest tick is at or after 15:30 IST.
+- At the end of the day the screener stops itself once the feed has been silent for 120 seconds (with Fyers, about 16:00 IST), then closes any remaining positions as `Session end` marks.
 - Ticks that arrive while the screener is down are not replayed, so a price gap shows up at the first live price after the restart.
 - A saved row that cannot be restored is skipped and logged, and stays in the database.
 
@@ -149,13 +156,13 @@ This project is mostly a record of things that looked right and were not. The fi
 
 **1. A "win rate" that was really a clock bug.** In the demo, every trade closed instantly at breakeven. Positions were stamped with wall-clock time, but exits were compared against an accelerated simulated clock, so every trade looked like it had been held past the max hold time. The fix was to use the triggering tick's timestamp everywhere, and it is now a rule: entry and exit logic only ever use the tick clock.
 
-**2. The deterioration monitor was reacting to noise.** On the first live session, every ACCEPTed trade was closed in the same second it opened. The monitor re-scored the model on each tick, and the score swung by 19 to 86 points between consecutive ticks. My first theory (the LTQ flag) was wrong; the model-confidence flag was the one firing. The monitor now waits 120 seconds, requires the warning to persist for 30 seconds, and only exits when price is at or below entry. After the change, deterioration exits were held for 150 to 337 seconds. A paired comparison of the new monitor against Basic twins is **inconclusive**: 4 recent cuts, an average effect of −22 per trade with a range of about ±83. That is far too little data to say whether the monitor helps.
+**2. The deterioration monitor was reacting to noise.** On the first live session, every ACCEPTed trade was closed in the same second it opened. The monitor re-scored the model on each tick, and the score swung by 19 to 86 points between consecutive ticks. My first theory (the LTQ flag) was wrong; the model-confidence flag was the one firing. The monitor now waits 120 seconds, requires the warning to persist for 30 seconds, and only exits when price is at or below entry. After the change, deterioration exits were held for about 150 to 350 seconds. Whether the monitor helps is still **inconclusive**. Across 15 early exits since 15 October, the Filtered book did better than the Basic twins by an average of ₹91 per trade (standard error ₹69; the monitor helped on 9 trades and hurt on 6), and an approximate 95% interval of about −₹60 to +₹240 includes zero comfortably. An earlier reading on only 4 cuts had the opposite sign (−₹22), which shows how little a sample this size can say.
 
 **3. My own training script was corrupting my data.** An audit of the saved tick files found duplicated sessions, mock rows mixed into real files and one file of 2.3 GB. The cause was that building a training set created the crossover engine with tick saving switched on, so every training run re-appended everything it read. Training and the end-to-end test no longer write there, and a regression test plus a guard in the test suite make a repeat fail loudly. The audit also confirmed that no mock rows reached the training set. Older files from before the fix are still mixed and are not used for training.
 
-**4. The model is a proof of pipeline, not an edge.** The validation AUC of 0.58 means the model ranked 32 of 55 profitable/unprofitable pairs correctly. With 16 validation examples, one-sided p ≈ 0.33 and a 95% interval of roughly 0.27 to 0.90, that cannot be separated from guessing. Score tracing exists to test a further suspicion: that entry scores near 0.95 are not stable confidence. There is not yet enough data to say.
+**4. The model is a proof of pipeline, not an edge.** The validation AUC of 0.58 means the model ranked 32 of 55 profitable/unprofitable pairs correctly. With 16 validation examples, one-sided p ≈ 0.33 and a 95% interval of roughly 0.27 to 0.90, that cannot be separated from guessing. Score tracing tested a further suspicion, that high entry scores are not stable confidence, and the first data supports it. For 21 ACCEPTed crossovers the mean score fell from 0.85 at entry to 0.58 within a minute and 0.41 after two minutes or more, and about 61% of the re-scored ACCEPTs would have been flipped to AVOID by a later score. AVOID scores drifted the other way (0.12 to about 0.31). This is a small sample from a few sessions, and part of the movement is real change in the order book, but it means an entry probability should not be read as confidence.
 
-**5. Crash safety was a real gap.** A PC restart on 15 October lost the open positions and blanked every decision on the dashboard. Open positions and carried decisions are now persisted and restored as described above.
+**5. Crash safety was a real gap.** A PC restart on 15 October lost the open positions and blanked every decision on the dashboard. Open positions and carried decisions are now persisted and restored as described above. On 26 October the Basic book's positions survived a real PC restart and a graceful mid-day stop in a live session.
 
 ## Bugs found and fixed
 
@@ -177,13 +184,15 @@ Real debugging, documented rather than hidden:
 
 ## Known limitations
 
-- Open positions are saved as they open and resumed after a crash or restart on the same trading day. Positions still open after the 15:30 IST close are closed at the last price and labelled `Session end (marked at last price)`; these are marks, not fills. Ticks missed while the program was down are not replayed, so a stop or target crossed during the downtime fires at the first live price after the restart.
-- Positions closed as `Recovered after restart` are also marks, not fills. Analyses should filter on both this reason and `Session end`.
-- Restart recovery is covered by automated tests, but has not yet been exercised by killing the screener during a live market session.
+- Restart recovery has been exercised in live sessions (26 Oct 2026): after a PC restart and again after a graceful mid-day stop, open Basic-book positions were restored with their original entry times and exited by the max-hold rule at the right time. The Filtered book had no open position at either restart, so its recovery path is covered only by automated tests.
+- Open positions are saved as they open and resumed after a crash or restart on the same trading day. Ticks missed while the program was down are not replayed, so a stop or target crossed during the downtime fires at the first live price after the restart.
+- Positions still open when the screener stops after the close are closed at the last price seen and labelled `Session end (marked at last price)`. Positions left open overnight by a crash are closed at the last saved price and labelled `Recovered after restart`. Both are marks, not fills, and analyses should filter on these reasons.
+- The engine keeps managing positions until the feed goes quiet (about 16:00 IST), not until the 15:30 NSE close. On 26 October five trades closed after 15:30 (net +₹40.55): two Basic max-hold exits at 15:39 and 15:46 and three session-end marks, all on post-close ticks, so they are not realistic fills. No trade opened after 15:30 that day, but a hard 15:30 cutoff is not implemented yet.
+- The dashboard's "today" tiles count only trades closed since the program last started, so they reset after a restart. The all-time totals are read from the database and are not affected.
 - The Fyers access token must be regenerated every trading day.
 - The model's training sample is tiny and partly duplicated, its validation AUC is indistinguishable from chance, and its score for the same setup can move by tens of points within seconds on real data. Its probabilities should not be read as confidence.
-- Live paper-trading results so far cover a few sessions and a few dozen trades, far too few to judge the strategy. The comparison of the Filtered book against Basic is not statistically meaningful yet.
-- Many Filtered trades have no Basic twin: after the monitor cuts a Filtered trade, a new crossover can re-enter Filtered while Basic still holds its original position.
+- Live paper-trading results so far cover a few sessions and at most about a hundred trades per book, far too few to judge the strategy. The comparison of the Filtered book against Basic is not statistically meaningful yet.
+- Many Filtered trades have no Basic twin (12 of 34 in the latest report): after the monitor cuts a Filtered trade, a new crossover can re-enter Filtered while Basic still holds its original position.
 - Some historical tick files from before the pollution fix contain duplicated sessions or mock rows. The model was not trained on mock rows.
 - The Angel One adapter has not been exercised in a live session.
 - The Docker setup keeps its own database, separate from a local run's.
@@ -194,4 +203,4 @@ Python 3.12, scikit-learn, joblib, SQLAlchemy, SQLite, Streamlit, Plotly, pandas
 
 ## Roadmap
 
-Done: CI and regression tests, database persistence, Docker, crash-safe restarts. Next: retrain on verified, de-duplicated data with a time-based split and a bootstrap confidence interval; an entry-filter report (ACCEPT vs AVOID outcomes) once enough scored crossovers exist; and refreshed live-dashboard screenshots. A multi-user FastAPI backend with per-user encrypted broker credentials is possible later, but is deprioritised because it means holding other people's broker credentials.
+Done: CI and regression tests, database persistence, Docker, crash-safe restarts. Next: a hard 15:30 cutoff for entries and exits; retraining on verified, de-duplicated data with a time-based split and a bootstrap confidence interval; and an entry-filter report (ACCEPT vs AVOID outcomes) once enough scored crossovers exist. A multi-user FastAPI backend with per-user encrypted broker credentials is possible later, but is deprioritised because it means holding other people's broker credentials.
