@@ -62,6 +62,10 @@ def _ist_date(epoch_seconds: float):
 
 
 class App:
+    # True once the end-of-session routine has run. A class-level default, so
+    # an App built without __init__ (as some tests do) still has it.
+    _finished: bool = False
+
     def __init__(self, broker_name: str, use_db: bool = True, db_url: str | None = None):
         self.engine = CrossoverEngine()
         self.model = CrossoverModel()
@@ -316,6 +320,25 @@ class App:
         return (moment.hour, moment.minute) >= MARKET_CLOSE_IST
 
     def _finish(self):
+        """
+        End-of-session routine, run at most once.
+
+        Ctrl+C and `docker stop` call this from the signal handler, and the
+        SystemExit that handler raises then runs the `finally` block in run(),
+        which calls it again. Without this guard the second pass repeated the
+        report (and, after the close, a second close_all()). If the first pass
+        fails, the flag is cleared so a later call can retry.
+        """
+        if self._finished:
+            return
+        self._finished = True
+        try:
+            self._finish_once()
+        except Exception:
+            self._finished = False
+            raise
+
+    def _finish_once(self):
         if self._session_is_over():
             # The trading day is over. Positions still open would otherwise
             # vanish without ever being recorded, so close them at the last
