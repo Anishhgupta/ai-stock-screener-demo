@@ -21,6 +21,12 @@ last price seen for each symbol, so they are recorded instead of vanishing.
 Those exits carry the reason SESSION_END_REASON, so they can be told apart
 from real exits (they are marks to the last price, not fills).
 
+Optionally the engine knows the session close (session_close=(15, 30), in
+Indian time). From the first tick at or after that time it opens nothing,
+evaluates no exits, and closes every open position at the last price seen
+before the close, with the reason SESSION_END_REASON. Without session_close
+(the demo and the mock broker) nothing changes.
+
 Optionally the engine records every crossover (with its features) and
 re-scores each setup every few seconds for a while afterwards, so the
 stability of the model's verdict can be measured offline.
@@ -54,6 +60,8 @@ DEFAULT_MONITOR_CONFIRM_SECONDS = 30.0
 SESSION_END_REASON = "Session end (marked at last price)"
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 5.0
 DEFAULT_SAMPLE_WINDOW_SECONDS = 900.0
+IST_OFFSET_SECONDS = 5 * 3600 + 30 * 60   # India has no daylight saving
+SECONDS_PER_DAY = 86400
 
 
 def _locked(method):
@@ -181,7 +189,8 @@ class PaperTradingEngine:
                  on_sample: Optional[Callable[[ScoreSample], None]] = None,
                  sample_interval_seconds: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
                  sample_window_seconds: float = DEFAULT_SAMPLE_WINDOW_SECONDS,
-                 on_open: Optional[Callable[[OpenPositionRecord], None]] = None):
+                 on_open: Optional[Callable[[OpenPositionRecord], None]] = None,
+                 session_close: Optional[tuple[int, int]] = None):
         self.model = model
         self.on_close = on_close
         self.on_log = on_log
@@ -196,11 +205,29 @@ class PaperTradingEngine:
         self.monitor_confirm_seconds = monitor_confirm_seconds
         self._lock = threading.RLock()
         self._last_tick: dict[str, tuple[float, float]] = {}  # symbol -> (price, ts)
+        self._post_close_ts: Optional[float] = None   # newest tick seen after the close
+        self.session_close = session_close
         self.open_positions: dict[tuple[Book, str], Position] = {}
         self.closed_positions: list[Position] = []
         self.trade_log: list[TradeLogEntry] = []
         self.avoided_count = 0
         self.avoided_reasons: dict[str, int] = {}
+
+    @property
+    def session_close(self) -> Optional[tuple[int, int]]:
+        """(hour, minute) in Indian time after which the engine stops trading, or None."""
+        return self._session_close
+
+    @session_close.setter
+    def session_close(self, value: Optional[tuple[int, int]]):
+        self._session_close = value
+        self._close_seconds = None if value is None else value[0] * 3600 + value[1] * 60
+
+    def _after_close(self, ts: float) -> bool:
+        """True if this timestamp is at or after the session close (never with no cutoff set)."""
+        if self._close_seconds is None:
+            return False
+        return (ts + IST_OFFSET_SECONDS) % SECONDS_PER_DAY >= self._close_seconds
 
     def _log(self, entry: TradeLogEntry):
         self.trade_log.append(entry)
@@ -227,6 +254,8 @@ class PaperTradingEngine:
         # for callers that don't pass it (real-time feeds).
         symbol, signal = event.symbol, event.signal
         event_ts = ts if ts is not None else time.time()
+        if self._after_close(event_ts):
+            return   # the session is over: no new entries, and nothing is recorded
         self._notify(self.on_crossover_event, CrossoverRecord(
             symbol=symbol, signal=signal, ts=event_ts, price=live_ltp,
             decision=decision.decision, probability=decision.probability,
@@ -321,6 +350,18 @@ class PaperTradingEngine:
 
     @_locked
     def on_tick(self, tick: Tick, live_feat: Optional[FeatureSnapshot]):
+        if self._after_close(tick.ts):
+            # The session is over. Post-close prices are not tradeable, so no
+            # exit rule is evaluated on them. Every open position is marked at
+            # the last price seen BEFORE the close: _last_tick is deliberately
+            # not updated here.
+            if self._post_close_ts is None or tick.ts > self._post_close_ts:
+                self._post_close_ts = tick.ts
+            if self.open_positions:
+                self._sampling.clear()
+                self.close_all()
+            return
+
         self._last_tick[tick.symbol] = (tick.ltp, tick.ts)
         self._maybe_sample(tick, live_feat)
         for book in (Book.BASIC, Book.FILTERED):
@@ -415,8 +456,15 @@ class PaperTradingEngine:
 
     @_locked
     def latest_tick_ts(self) -> Optional[float]:
-        """Timestamp of the newest tick seen on any symbol (None before the first)."""
-        return max((ts for _, ts in self._last_tick.values()), default=None)
+        """
+        Timestamp of the newest tick seen on any symbol (None before the first).
+        Ticks after the session close count too, so the caller can tell the
+        trading day is over even though those ticks no longer move any price.
+        """
+        seen = [ts for _, ts in self._last_tick.values()]
+        if self._post_close_ts is not None:
+            seen.append(self._post_close_ts)
+        return max(seen, default=None)
 
     @_locked
     def close_all(self, reason: str = SESSION_END_REASON) -> int:

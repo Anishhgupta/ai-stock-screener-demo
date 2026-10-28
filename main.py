@@ -70,6 +70,7 @@ class App:
         self.engine = CrossoverEngine()
         self.model = CrossoverModel()
         self.trader = self._make_trader(use_db, db_url)
+        if broker_name != "mock": self.trader.session_close = MARKET_CLOSE_IST
         self.broker = self._build_broker(broker_name)
         self._last_state_write = 0.0
         self._latest_by_symbol: dict[str, dict] = {}
