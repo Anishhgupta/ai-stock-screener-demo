@@ -38,3 +38,4 @@ __pycache__/
 *.db-shmmcp_bridge.py
 tick_report.txt
 mcp_bridge.py
+screener_log_*.txt

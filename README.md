@@ -48,7 +48,7 @@ flowchart LR
     PF --> DB
     M --> DB
     DB --> D["Streamlit dashboard"]
-    DB --> R["Analysis reports<br/>score stability, monitor effect"]
+    DB --> R["Analysis reports<br/>score stability, monitor effect,<br/>entry filter"]
 ```
 
 The paper-trading engine is callback-based and does not depend on the database. A failing database write is logged and never stops the tick loop.
@@ -139,6 +139,8 @@ Tables: `users`, `paper_positions` (closed trades), `open_positions`, `trade_log
 
 **Monitor effect.** `python -m storage.monitor_effect --since YYYY-MM-DD` pairs each Filtered trade with its Basic twin and reports what the early exit changed, with an uncertainty range. In Docker: `docker compose --profile live run --rm dashboard python -m storage.monitor_effect --since 2026-10-15`.
 
+**Entry filter.** `python -m storage.entry_filter [--since YYYY-MM-DD]` links each saved crossover to the Basic book's trade (the Basic book enters every crossover, whatever the model said) and compares ACCEPT with AVOID: win rate and mean P/L per group, a bootstrap interval on the difference, and the score's AUC against profit. Trades closed by session-end or recovery marks are left out. In Docker: `docker compose --profile live run --rm dashboard python -m storage.entry_filter`.
+
 **Tick-file audit.** `python check_ticks.py` is a read-only check that flags saved tick files that look wrong (weekends, rows outside market hours, implausible price ranges, and mock-feed depth patterns).
 
 ## Testing
@@ -148,7 +150,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-188 automated tests run on every push through GitHub Actions. They cover the SMMA maths, candle aggregation, feature engineering, the depth screen, the crossover pipeline, the paper-trading engine, session-end handling, restart recovery, score tracing, the storage layer and the dashboard's data logic. Several are regression tests for real bugs listed below. The newer ones were checked by deliberately breaking the code to confirm the tests fail. A test guard also fails any test that writes into the real tick-data folder.
+198 automated tests run on every push through GitHub Actions. They cover the SMMA maths, candle aggregation, feature engineering, the depth screen, the crossover pipeline, the paper-trading engine, session-end handling, restart recovery, score tracing, the storage layer and the dashboard's data logic. Several are regression tests for real bugs listed below. The newer ones were checked by deliberately breaking the code to confirm the tests fail. A test guard also fails any test that writes into the real tick-data folder.
 
 ## What I found
 
@@ -186,10 +188,10 @@ Real debugging, documented rather than hidden:
 
 ## Known limitations
 
-- Restart recovery has been exercised in live sessions (26 and 27 Oct 2026): after a PC restart, a graceful mid-day stop and a hard container kill, open positions were restored with their original entry prices and times and then exited normally (max hold for Basic positions, the deterioration monitor for a Filtered one, whose grace period counted from its original entry). The Filtered book's recovery was exercised once, by the hard kill. These are single instances, which show the path works but are not exhaustive.
+- Restart recovery has been exercised in live sessions (26 and 27 Oct 2026): after a PC restart, a graceful mid-day stop and a hard container kill, open positions were restored with their original entry prices and times and then exited normally (max hold for Basic positions, the deterioration monitor for a Filtered one, whose grace period counted from its original entry). The Filtered book's recovery was exercised once, by the hard kill. These are single instances, which show the path works but are not exhaustive. On 29 Oct 2026 the earlier-day path also ran live for the first time: three positions (two Basic, one Filtered) left open when the program stopped unexpectedly the previous afternoon were closed as `Recovered after restart` at the last price saved before it stopped. Those are marks, not fills.
 - Ticks missed while the program was down are not replayed, so a stop or target crossed during the downtime fires at the first live price after the restart.
 - Positions still open when the screener stops after the close are closed at the last price seen and labelled `Session end (marked at last price)`. Positions left open overnight by a crash are closed at the last saved price and labelled `Recovered after restart`. Both are marks, not fills, and analyses should filter on these reasons.
-- The engine stops trading at 15:30 IST for live brokers: from the first tick at or after the close it opens nothing, evaluates no exits, and marks open positions at the last price seen before the close (`Session end`). These are still marks, not fills. Before this was added (26–27 Oct 2026), exits and marks happened on post-close ticks, so those two sessions contain a handful of trades that are not realistic.
+- For live brokers the engine stops trading at 15:30 IST: from the first tick at or after the close it opens nothing, evaluates no exits, and marks open positions at the last price seen before the close (`Session end`). This is covered by automated tests. In live sessions since it was added, nothing closed after 15:30, but no position happened to be open at the close, so the marking itself has not yet been seen live. These marks are not fills. On 26 and 27 Oct 2026, before the cutoff existed, exits and marks happened on post-close ticks, so those two sessions contain a handful of unrealistic trades.
 - The dashboard's "today" tiles count only trades closed since the program last started, so they reset after a restart. The all-time totals are read from the database and are not affected.
 - The Fyers access token must be regenerated every trading day.
 - The model's training sample is tiny and partly duplicated, its validation AUC is indistinguishable from chance, and its score for the same setup can move by tens of points within seconds on real data. Its probabilities should not be read as confidence.
@@ -205,4 +207,4 @@ Python 3.12, scikit-learn, joblib, SQLAlchemy, SQLite, Streamlit, Plotly, pandas
 
 ## Roadmap
 
-Done: CI and regression tests, database persistence, Docker, crash-safe restarts. Next: a hard 15:30 cutoff for entries and exits; retraining on verified, de-duplicated data with a time-based split and a bootstrap confidence interval; and an entry-filter report (ACCEPT vs AVOID outcomes) once enough scored crossovers exist. A multi-user FastAPI backend with per-user encrypted broker credentials is possible later, but is deprioritised because it means holding other people's broker credentials.
+Done: CI and regression tests, database persistence, Docker, crash-safe restarts, a 15:30 trading cutoff, and an entry-filter report. Next: retraining on verified live data with a time-based split and a bootstrap confidence interval (and keeping the current model unless the new one clearly beats chance out of time), and a database-backed version of the dashboard's "today" tiles. A multi-user FastAPI backend with per-user encrypted broker credentials is possible later, but is deprioritised because it means holding other people's broker credentials.
