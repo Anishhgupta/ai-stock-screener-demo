@@ -10,13 +10,15 @@ import sys
 import time
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import BASE_DIR  # noqa: E402
 from storage.dashboard_data import (  # noqa: E402
-    all_time_summary, closed_trades_frame, decision_log_frame,
-    load_live_state, watchlist_frame,
+    CLOSED_TRADE_FORMATS, DECISION_LOG_FORMATS, POSITION_FORMATS, WATCHLIST_FORMATS,
+    all_time_summary, closed_trades_frame, decision_log_frame, load_live_state,
+    style_table, tile_numbers, today_summary, watchlist_frame,
 )
 from storage.db import make_engine  # noqa: E402
 from storage.repository import Repository  # noqa: E402
@@ -52,12 +54,16 @@ def render(state, repo, user_id):
             st.caption("Database unavailable: showing live state only, no saved history.")
 
         all_time = all_time_summary(repo, user_id)
+        today = today_summary(repo, user_id, state["updated_at"])
+        if today:
+            st.caption("Tiles count trades closed today (Indian time), read from the database, "
+                       "so they survive a restart. Open positions are live.")
         col1, col2 = st.columns(2)
         for col, key, book, label in (
             (col1, "basic_summary", "basic", "Basic Strategy"),
             (col2, "filtered_summary", "filtered", "AI/ML Filtered Strategy"),
         ):
-            s = state.get(key)
+            s = tile_numbers(state.get(key), today.get(book))
             if s:
                 with col:
                     st.subheader(label)
@@ -76,36 +82,32 @@ def render(state, repo, user_id):
         st.subheader("Watchlist — Live Screen")
         df = watchlist_frame(state)
         if len(df):
-            def highlight(row):
-                if row["Decision"] == "ACCEPT":
-                    return ["background-color: #d4f7d4"] * len(row)
-                if row["Decision"] == "AVOID":
-                    return ["background-color: #f7d4d4"] * len(row)
-                return [""] * len(row)
-
-            st.dataframe(df.style.apply(highlight, axis=1), width="stretch", height=400)
+            st.dataframe(style_table(df, WATCHLIST_FORMATS, highlight_decisions=True),
+                         width="stretch", height=400, hide_index=True)
         else:
             st.info("No ticks received yet.")
 
         st.subheader("Open Paper Positions")
         positions = state.get("open_positions", [])
         if positions:
-            import pandas as pd
-            st.dataframe(pd.DataFrame(positions), width="stretch")
+            st.dataframe(style_table(pd.DataFrame(positions), POSITION_FORMATS),
+                         width="stretch", hide_index=True)
         else:
             st.caption("No open positions.")
 
         st.subheader("Closed Paper Trades (latest 50)")
         closed = closed_trades_frame(repo, user_id)
         if len(closed):
-            st.dataframe(closed, width="stretch", height=300)
+            st.dataframe(style_table(closed, CLOSED_TRADE_FORMATS),
+                         width="stretch", height=300, hide_index=True)
         else:
             st.caption("No closed trades saved yet.")
 
         st.subheader("Decision Log (latest 50)")
         log = decision_log_frame(repo, user_id)
         if len(log):
-            st.dataframe(log, width="stretch", height=300)
+            st.dataframe(style_table(log, DECISION_LOG_FORMATS),
+                         width="stretch", height=300, hide_index=True)
         else:
             st.caption("No decisions saved yet.")
 
