@@ -26,7 +26,7 @@ def win_rate_gauge(win_rate: float, n_trades: int, title: str = "Win rate") -> g
         number={"suffix": "%", "valueformat": ".0f"},
         title={"text": f"{title} ({n_trades} trades)", "font": {"size": 14}},
         gauge={
-            "axis": {"range": [0, 100]},
+            "axis": {"range": [0, 100], "tickvals": [0, 50, 100]},
             "bar": {"color": colour},
             "bgcolor": "rgba(0,0,0,0)",
             "borderwidth": 1,
@@ -37,7 +37,7 @@ def win_rate_gauge(win_rate: float, n_trades: int, title: str = "Win rate") -> g
             ],
         },
     ))
-    fig.update_layout(height=220, margin=dict(l=20, r=20, t=50, b=10),
+    fig.update_layout(height=220, margin=dict(l=45, r=45, t=50, b=10),
                       paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
@@ -50,7 +50,7 @@ def verdict_donut(counts: dict) -> go.Figure:
         labels, values, colours = ["ACCEPT", "AVOID"], [accept, avoid], [GOOD, BAD]
     fig = go.Figure(go.Pie(labels=labels, values=values, hole=0.6,
                            marker=dict(colors=colours), sort=False))
-    fig.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10),
+    fig.update_layout(height=290, margin=dict(l=10, r=10, t=10, b=10),
                       paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
     fig.add_annotation(text=f"{accept} ACCEPT<br>{avoid} AVOID", x=0.5, y=0.5,
                        font_size=14, showarrow=False)

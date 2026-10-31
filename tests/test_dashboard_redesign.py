@@ -160,3 +160,11 @@ def test_donut_and_pnl_chart():
     curve = dd.pnl_curve([row("basic", 5.0, ts(30, 10)), row("filtered", -2.0, ts(30, 11))], ts(30, 15))
     figure = charts.pnl_chart(curve)
     assert [trace.name for trace in figure.data] == ["Basic", "Filtered"]
+
+def test_gauge_labels_have_room_and_the_donut_fills_its_card():
+    pytest.importorskip("plotly")
+    from dashboard import charts
+    gauge = charts.win_rate_gauge(0.5, 10)
+    assert list(gauge.data[0].gauge.axis.tickvals) == [0, 50, 100]
+    assert gauge.layout.margin.l >= 40 and gauge.layout.margin.r >= 40   # "100" was clipped to "10"
+    assert charts.verdict_donut({"ACCEPT": 1, "AVOID": 1}).layout.height >= 280
