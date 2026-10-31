@@ -9,6 +9,11 @@
 #       -> http://localhost:8502
 #
 # Stop with Ctrl+C, then `docker compose --profile live down`.
+#
+# Both web pages are published on 127.0.0.1 only, so they can be opened from
+# this computer but not from other devices on the network. The dashboard has
+# no login. To open it from another device on purpose, change the port
+# mapping to "8502:8501" and understand that anyone on that network can see it.
 
 name: ai-stock-screener
 
@@ -23,7 +28,7 @@ services:
     environment:
       SCREENER_MIN_DEPTH_QTY: ${SCREENER_MIN_DEPTH_QTY:-2000}
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
       interval: 30s
@@ -60,7 +65,7 @@ services:
     environment:
       SCREENER_DB_URL: sqlite:////db/screener.db
     ports:
-      - "8502:8501"
+      - "127.0.0.1:8502:8501"
     volumes:
       - screener-db:/db
     healthcheck:

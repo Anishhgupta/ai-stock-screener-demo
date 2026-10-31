@@ -106,8 +106,8 @@ def test_accept_and_avoid_rows_are_coloured_with_dark_text():
     avoid = dd.style_table(
         dd.watchlist_frame(_state(decision="AVOID", probability=0.07, signal="SELL")),
         dd.WATCHLIST_FORMATS, highlight_decisions=True).to_html()
-    assert "#d4f7d4" in accept and "#1a1a1a" in accept and "#f7d4d4" not in accept
-    assert "#f7d4d4" in avoid and "#d4f7d4" not in avoid
+    assert dd.ACCEPT_BG in accept and dd.ACCEPT_FG in accept and dd.AVOID_BG not in accept
+    assert dd.AVOID_BG in avoid and dd.ACCEPT_BG not in avoid
     assert "0.930" in accept
 
 
