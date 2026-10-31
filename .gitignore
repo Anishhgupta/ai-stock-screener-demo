@@ -39,3 +39,5 @@ __pycache__/
 tick_report.txt
 mcp_bridge.py
 screener_log_*.txt
+check_day.py
+eod.bat
