@@ -42,3 +42,4 @@ screener_log_*.txt
 check_day.py
 eod.bat
 eod.py
+.claude/
