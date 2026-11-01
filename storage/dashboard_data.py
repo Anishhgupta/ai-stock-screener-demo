@@ -48,6 +48,10 @@ DECISION_LOG_FORMATS = {"Probability": "{:.3f}", "P/L (Rs)": "{:,.2f}"}
 POSITION_FORMATS = {"Entry": "{:.2f}", "Now": "{:.2f}",
                     "P/L now (Rs)": "{:,.2f}", "Entry score": "{:.3f}"}
 
+# Best/worst tables are narrow (two side by side), so they show only the columns that matter,
+# with the profit or loss up front. "Book" is added when both books are shown.
+RANKED_COLUMNS = ["Symbol", "Signal", "P/L (Rs)", "Closed at", "Reason"]
+
 # Row colours: dark fills with light text, so they read the same in light and dark mode.
 ACCEPT_BG, ACCEPT_FG = "#0f5132", "#75b798"
 AVOID_BG, AVOID_FG = "#842029", "#ea868f"
@@ -335,14 +339,37 @@ def _highlight_decision(row):
     return [""] * len(row)
 
 
+def _display_text(value, fmt: Optional[str]) -> str:
+    """One cell as text: empty if missing, formatted if a format is given."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return ""
+    if fmt and not isinstance(value, str):
+        try:
+            return fmt.format(value)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
 def style_table(df: pd.DataFrame, formats: Optional[dict] = None,
                 highlight_decisions: bool = False):
     """
     A display version of a table: numbers formatted as given, missing values
-    left blank instead of shown as "None", and optionally ACCEPT/AVOID rows
-    coloured (dark fill with light text, so it stays readable in any theme).
+    shown as empty cells, and optionally ACCEPT/AVOID rows coloured (dark fill
+    with light text, so it stays readable in any theme).
+
+    Streamlit draws a null cell as "None" whatever a Styler says, so any column
+    that has a missing value is turned into formatted text, with "" for the
+    gaps. Columns with no gaps stay numeric, so clicking their header still
+    sorts them properly.
     """
-    styler = df.style
+    formats = dict(formats or {})
+    shown = df.copy()
+    for column in shown.columns:
+        if shown[column].isna().any():
+            fmt = formats.pop(column, None)
+            shown[column] = shown[column].map(lambda value, f=fmt: _display_text(value, f))
+    styler = shown.style
     if highlight_decisions:
         styler = styler.apply(_highlight_decision, axis=1)
-    return styler.format(formats or {}, na_rep="")
+    return styler.format(formats, na_rep="")

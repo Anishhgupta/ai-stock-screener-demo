@@ -168,3 +168,47 @@ def test_gauge_labels_have_room_and_the_donut_fills_its_card():
     assert list(gauge.data[0].gauge.axis.tickvals) == [0, 50, 100]
     assert gauge.layout.margin.l >= 40 and gauge.layout.margin.r >= 40   # "100" was clipped to "10"
     assert charts.verdict_donut({"ACCEPT": 1, "AVOID": 1}).layout.height >= 280
+
+def _two_symbols():
+    full = {"symbol": "NSE:B-EQ", "ltp": 167.6, "smma_fast": 167.73, "smma_slow": 167.92, "signal": "BUY",
+            "ltq": 143, "etq": 15613622, "bid_price": 167.6, "bid_qty": 657, "ask_price": 168.0,
+            "ask_qty": 1200, "imbalance": 0.4, "probability": 0.948, "decision": "ACCEPT", "reasons": ["x"]}
+    empty = dict(full, symbol="NSE:A-EQ", signal=None, probability=None, decision=None, reasons=[])
+    return {"symbols": {"a": empty, "b": full}}
+
+
+def test_streamlit_receives_no_nulls_because_it_would_draw_them_as_None():
+    styled = dd.style_table(dd.watchlist_frame(_two_symbols()), dd.WATCHLIST_FORMATS)
+    assert styled.data.isna().sum().sum() == 0
+    column = list(styled.data["AI Probability"])
+    assert sorted(column) == ["", "0.948"]                       # formatted like the numeric columns
+
+
+def test_columns_without_gaps_stay_numeric_so_they_still_sort():
+    styled = dd.style_table(dd.watchlist_frame(_two_symbols()), dd.WATCHLIST_FORMATS)
+    assert pd.api.types.is_numeric_dtype(styled.data["LTP"])
+    assert pd.api.types.is_numeric_dtype(styled.data["Bid Qty"])
+
+
+def test_a_table_with_no_gaps_is_left_exactly_as_it_was():
+    full = _two_symbols()
+    full["symbols"].pop("a")
+    df = dd.watchlist_frame(full)
+    styled = dd.style_table(df, dd.WATCHLIST_FORMATS)
+    pd.testing.assert_frame_equal(styled.data, df)
+
+
+def test_open_positions_also_lose_their_nulls():
+    positions = dd.positions_frame({
+        "symbols": {"NSE:A-EQ": {"ltp": 101.0}},
+        "open_positions": [{"book": "basic", "symbol": "NSE:A-EQ", "signal": "BUY", "entry_price": 100.0,
+                            "qty": 10, "monitor_flag": None, "entry_prob": None}]})
+    shown = dd.style_table(positions, dd.POSITION_FORMATS).data
+    assert shown.isna().sum().sum() == 0
+    assert shown.loc[0, "Entry score"] == "" and shown.loc[0, "Monitor"] == ""
+    assert shown.loc[0, "Entry"] == 100.0                        # numeric, untouched
+
+
+def test_best_and_worst_tables_show_the_profit_and_loss_early():
+    assert dd.RANKED_COLUMNS[:3] == ["Symbol", "Signal", "P/L (Rs)"]
+    assert "Book" not in dd.RANKED_COLUMNS

@@ -20,7 +20,7 @@ from dashboard.charts import (  # noqa: E402
 )
 from storage.dashboard_data import (  # noqa: E402
     CLOSED_TRADE_FORMATS, DECISION_LOG_FORMATS, EXPORT_ROW_LIMIT, IST,
-    POSITION_FORMATS, WATCHLIST_FORMATS, all_time_summary, closed_trades_frame,
+    POSITION_FORMATS, RANKED_COLUMNS, WATCHLIST_FORMATS, all_time_summary, closed_trades_frame,
     decision_log_frame, filter_watchlist, format_rupees, load_live_state,
     pnl_curve, positions_frame, ranked_trades, recent_rows, sort_watchlist,
     status_line, style_table, summarise_today, tile_numbers, to_csv_bytes,
@@ -190,7 +190,8 @@ def results_and_export():
             if ranked[key].empty:
                 st.caption("No trades yet.")
             else:
-                st.dataframe(style_table(ranked[key], CLOSED_TRADE_FORMATS),
+                columns = (["Book"] if choice == "Both" else []) + RANKED_COLUMNS
+                st.dataframe(style_table(ranked[key][columns], CLOSED_TRADE_FORMATS),
                              width="stretch", hide_index=True)
     st.caption("A few trades say little about a strategy. Judge it by all of them, and by how many there are.")
 
