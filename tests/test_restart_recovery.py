@@ -361,10 +361,10 @@ def test_stopping_in_the_middle_of_the_session_keeps_positions_for_the_next_star
 
 
 @pytest.mark.parametrize("offset, over", [(-1, False), (0, True), (1, True)])
-def test_the_session_is_over_from_1530_indian_time(monkeypatch, tmp_path, db_url, offset, over):
+def test_the_session_is_over_from_the_close_indian_time(monkeypatch, tmp_path, db_url, offset, over):
     app = new_app(monkeypatch, tmp_path, db_url)
     assert app._session_is_over() is False              # no tick yet
-    app.trader.on_tick(make_tick(AFTER_CLOSE + offset, PRICE), None)
+    app.trader.on_tick(make_tick(AFTER_CLOSE + ((main.MARKET_CLOSE_IST[0] - 15) * 60 + main.MARKET_CLOSE_IST[1] - 30) * 60 + offset, PRICE), None)
     assert app._session_is_over() is over
 
 

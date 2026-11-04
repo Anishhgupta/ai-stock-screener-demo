@@ -43,3 +43,6 @@ check_day.py
 eod.bat
 eod.py
 .claude/
+breakdown.py
+tick_minutes.py
+minute_table.py

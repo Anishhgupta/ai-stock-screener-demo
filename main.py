@@ -51,7 +51,7 @@ STATE_PATH = BASE_DIR / "dashboard" / "state.json"
 logger = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
-MARKET_CLOSE_IST = (15, 30)   # NSE cash market close, hour and minute in Indian time
+MARKET_CLOSE_IST = (15, 15)   # NSE cash market close, hour and minute in Indian time
 RECOVERED_REASON = "Recovered after restart (marked at last snapshot price)"
 RECOVERED_FLAT_REASON = "Recovered after restart (no price available, marked flat)"
 
