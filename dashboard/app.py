@@ -26,6 +26,10 @@ from storage.dashboard_data import (  # noqa: E402
     status_line, style_table, summarise_today, tile_numbers, to_csv_bytes,
     verdict_counts, watchlist_frame,
 )
+from storage.dashboard_data import TODAY_ROW_LIMIT  # noqa: E402
+from storage.dashboard_summary import (  # noqa: E402
+    PRE_RULE_NOTE, all_time_from_rows, all_time_line, has_pre_rule_trades, outcome_text,
+)
 from storage.db import make_engine  # noqa: E402
 from storage.repository import Repository  # noqa: E402
 
@@ -60,7 +64,7 @@ def load_table(loader, *args, **kwargs):
         return None
 
 
-def render_book_card(column, label, book, summary, saved):
+def render_book_card(column, label, book, summary, counts, saved):
     with column, st.container(border=True):
         st.subheader(label)
         left, right = st.columns(2)
@@ -69,12 +73,15 @@ def render_book_card(column, label, book, summary, saved):
         left.metric("Open now", summary["open_trades"])
         right.plotly_chart(win_rate_gauge(summary["win_rate"], summary["total_trades"]),
                            key=f"gauge-{book}")
+        counts_text = outcome_text(counts)
+        if counts_text:
+            note = " The win rate counts wins only, so a breakeven lowers it." if (counts or {}).get("breakeven") else ""
+            st.caption(f"Today: {counts_text}.{note}")
         if summary["total_trades"] < MIN_TRADES_FOR_COLOUR:
             n = summary["total_trades"]
             st.caption(f"Only {n} trade{'' if n == 1 else 's'} so far: too few to read anything into.")
         if saved:
-            st.caption(f"All time (saved): {saved['total_trades']} trades, "
-                       f"{saved['win_rate']:.0%} win rate, P/L {format_rupees(saved['total_pnl'])}")
+            st.caption(all_time_line(saved))
 
 
 @st.fragment(run_every=LIVE_REFRESH_SECONDS)
@@ -91,10 +98,12 @@ def live_panel():
 
     rows = recent_rows(repo, user_id)
     today = summarise_today(rows, state["updated_at"]) if rows is not None else {}
-    try:
-        all_time = all_time_summary(repo, user_id)
-    except Exception:
-        all_time = {}
+    all_time = all_time_from_rows(rows, TODAY_ROW_LIMIT)
+    if not all_time:
+        try:
+            all_time = all_time_summary(repo, user_id)
+        except Exception:
+            all_time = {}
     if today:
         st.caption("The numbers for today count trades closed today (Indian time), read from the saved "
                    "history, so they survive a restart. Open positions are live.")
@@ -106,7 +115,11 @@ def live_panel():
     ):
         summary = tile_numbers(state.get(key), today.get(book))
         if summary:
-            render_book_card(column, label, book, summary, all_time.get(book))
+            render_book_card(column, label, book, summary,
+                             today.get(book) or state.get(key), all_time.get(book))
+
+    if has_pre_rule_trades(rows):
+        st.caption(PRE_RULE_NOTE)
 
     with verdict_col, st.container(border=True):
         st.subheader("Latest verdicts")
