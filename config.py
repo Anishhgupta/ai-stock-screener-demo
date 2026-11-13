@@ -4,6 +4,8 @@ Central configuration for the screening/paper-trading system.
 Nothing secret lives here. Real credentials are read from environment
 variables (or a local, git-ignored `.env`) at runtime — see brokers/base.py.
 """
+import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,3 +93,76 @@ class ScreenerConfig:
 
 
 CONFIG = ScreenerConfig()
+
+
+# ---------------------------------------------------------------------
+# Settings that can be changed from .env (see setup_wizard.py) without editing
+# code. They are applied by main.py when the screener starts, never at import,
+# so tests and the demo always see the defaults above.
+# ---------------------------------------------------------------------
+class ConfigError(ValueError):
+    """A setting in .env or the environment is not valid."""
+
+
+BROKERS = ("mock", "fyers", "angelone")
+MAX_WATCHLIST = 200
+WATCHLIST_PATTERN = re.compile(r"^[A-Z0-9&_-]+:[A-Z0-9&_-]+-EQ$")
+
+# environment name: (field, kind, lowest, highest, scale into the field's own unit)
+SETTING_RULES = {
+    "SCREENER_CAPITAL_PER_TRADE": ("capital_per_trade", "float", 1_000.0, 10_000_000.0, 1.0),
+    "SCREENER_STOP_LOSS_PERCENT": ("stop_loss_pct", "float", 0.1, 5.0, 0.01),
+    "SCREENER_TARGET_PERCENT": ("target_pct", "float", 0.1, 10.0, 0.01),
+    "SCREENER_MAX_HOLD_MINUTES": ("max_hold_minutes", "int", 1, 300, 1),
+    "SCREENER_MAX_POSITIONS": ("max_concurrent_positions", "int", 1, 100, 1),
+}
+
+
+def parse_setting(name: str, raw) -> tuple:
+    """(field, value in the field's unit) for one setting, or ConfigError saying what is wrong."""
+    attr, kind, low, high, scale = SETTING_RULES[name]
+    text = str(raw).strip().replace(",", "")
+    try:
+        number = float(text) if kind == "float" else int(text)
+    except ValueError:
+        what = "a number" if kind == "float" else "a whole number"
+        raise ConfigError(f"{name} must be {what}, not {str(raw).strip()!r}.") from None
+    if not low <= number <= high:
+        raise ConfigError(f"{name} must be between {low:g} and {high:g}, not {text}.")
+    return attr, (round(number * scale, 6) if kind == "float" else number)
+
+
+def parse_watchlist(raw: str) -> list:
+    """Symbols like NSE:SBIN-EQ separated by commas: upper-cased, duplicates dropped."""
+    symbols = []
+    for token in (t.strip().upper() for t in str(raw).split(",")):
+        if not token:
+            continue
+        if not WATCHLIST_PATTERN.match(token):
+            raise ConfigError(f"{token!r} is not a symbol in the form NSE:SBIN-EQ.")
+        if token not in symbols:
+            symbols.append(token)
+    if not symbols:
+        raise ConfigError("The watchlist is empty.")
+    if len(symbols) > MAX_WATCHLIST:
+        raise ConfigError(f"The watchlist has {len(symbols)} symbols; the most allowed is {MAX_WATCHLIST}.")
+    return symbols
+
+
+def apply_env_overrides(cfg, environ=None):
+    """Apply any settings found in the environment to cfg (a ScreenerConfig) and return it."""
+    env = os.environ if environ is None else environ
+    for name in SETTING_RULES:
+        raw = (env.get(name) or "").strip()
+        if raw:
+            attr, value = parse_setting(name, raw)
+            setattr(cfg, attr, value)
+    raw = (env.get("SCREENER_WATCHLIST") or "").strip()
+    if raw:
+        cfg.watchlist = parse_watchlist(raw)
+    raw = (env.get("BROKER") or "").strip().lower()
+    if raw:
+        if raw not in BROKERS:
+            raise ConfigError(f"BROKER must be one of {', '.join(BROKERS)}, not {raw!r}.")
+        cfg.broker = raw
+    return cfg

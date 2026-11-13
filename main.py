@@ -37,7 +37,7 @@ load_dotenv()  # reads .env in the current working directory, if present,
                 # broker adapter tries to read them via get_env()
 
 from brokers.base import build_broker, Tick
-from config import CONFIG, BASE_DIR
+from config import CONFIG, BASE_DIR, ConfigError, apply_env_overrides
 from data.tick_store import TickStore
 from features.engineering import build_feature_snapshot
 from ml.predict import CrossoverModel, Decision
@@ -361,6 +361,10 @@ class App:
 
 
 if __name__ == "__main__":
+    try:
+        apply_env_overrides(CONFIG)
+    except ConfigError as problem:
+        sys.exit(f"Settings problem: {problem}\nCheck your .env with: python setup_wizard.py --check")
     parser = argparse.ArgumentParser()
     parser.add_argument("--broker", default=CONFIG.broker, choices=["mock", "fyers", "angelone"])
     parser.add_argument("--duration", type=int, default=None, help="Seconds to run (omit for indefinite/until Ctrl+C)")
