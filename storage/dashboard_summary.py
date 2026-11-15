@@ -67,9 +67,15 @@ def all_time_line(saved: Optional[dict]) -> str:
 
 
 def has_pre_rule_trades(rows: Optional[list]) -> bool:
-    """True if any saved trade was entered before the 15:15 rule started (entries with no time are ignored)."""
+    """
+    True if any saved trade belongs to the time before the 15:15 rule started. The entry time is
+    used when the rows carry it, otherwise the exit time: the trade list the dashboard reads does
+    not always include entry times, and without a fallback the note would never appear.
+    """
     for r in rows or []:
-        entry = r.get("entry_ts")
-        if entry is not None and datetime.fromtimestamp(entry, IST).strftime("%Y-%m-%d") < RULE_CHANGE_DAY:
+        moment = r.get("entry_ts")
+        if moment is None:
+            moment = r.get("exit_ts")
+        if moment is not None and datetime.fromtimestamp(moment, IST).strftime("%Y-%m-%d") < RULE_CHANGE_DAY:
             return True
     return False

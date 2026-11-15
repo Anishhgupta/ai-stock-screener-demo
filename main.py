@@ -360,7 +360,33 @@ class App:
         print_report(report)
 
 
+def run_to_exit_code(app, duration_seconds) -> int:
+    """
+    Run the session and return the process exit code: 0 for a normal end or a
+    graceful stop, the code given to sys.exit, 130 for Ctrl+C before the handler
+    was installed, and 1 for a crash (after printing the traceback).
+    """
+    try:
+        app.run(duration_seconds)
+        return 0
+    except SystemExit as stop:
+        if isinstance(stop.code, int):
+            return stop.code
+        if stop.code is None:
+            return 0
+        print(stop.code, file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 if __name__ == "__main__":
+    import os
+
     try:
         apply_env_overrides(CONFIG)
     except ConfigError as problem:
@@ -372,4 +398,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     app = App(args.broker, use_db=not args.no_db)
-    app.run(args.duration)
+    code = run_to_exit_code(app, args.duration)
+    # A broker's websocket can leave a thread running that keeps the process alive for hours after the
+    # session has ended (seen on 13 Nov 2026). The session is finished and saved by now, so leave at once.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

@@ -68,3 +68,17 @@ def test_the_note_is_not_shown_without_entry_times_or_trades():
 
 def test_the_note_explains_why_the_old_totals_cannot_be_trusted():
     assert "4 Nov 2026" in ds.PRE_RULE_NOTE and "15:15" in ds.PRE_RULE_NOTE and "not reliable" in ds.PRE_RULE_NOTE
+
+
+def test_the_note_still_works_when_the_rows_carry_only_exit_times():
+    # the real trade list the dashboard reads has exit times but may have no entry times
+    old = {"book": "basic", "pnl": 1.0, "exit_ts": at(30, 14, 0, month=10)}
+    new = {"book": "basic", "pnl": 1.0, "exit_ts": at(5, 14, 0)}
+    assert ds.has_pre_rule_trades([old]) is True
+    assert ds.has_pre_rule_trades([new]) is False
+    assert ds.has_pre_rule_trades([new, old]) is True
+
+
+def test_an_entry_time_takes_precedence_over_an_exit_time():
+    spans_the_change = {"book": "basic", "pnl": 1.0, "entry_ts": at(3, 14, 0), "exit_ts": at(4, 10, 0)}
+    assert ds.has_pre_rule_trades([spans_the_change]) is True
