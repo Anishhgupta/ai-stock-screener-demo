@@ -43,8 +43,11 @@ services:
     # main.py shuts down cleanly (saves its report) on SIGINT only.
     stop_signal: SIGINT
     stop_grace_period: 30s
-    # main.py exits by itself after market close; do not restart it in a loop.
-    restart: "no"
+    # Exit code 0 means the session finished or was stopped on purpose: do not restart.
+    # Exit code 3 means the feed went silent while the market was open, and 1 means a crash:
+    # Docker restarts the screener (at most 5 times in a row). It reconnects, restores the
+    # saved open positions and carries on. `docker compose stop` and `down` never restart it.
+    restart: on-failure:5
     env_file:
       - path: .env
         required: false

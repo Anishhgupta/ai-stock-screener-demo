@@ -19,6 +19,10 @@ The dashboard (Streamlit) reads the live snapshot this script saves to the
 database about once a second (state.json is still written as a fallback) --
 run it separately:
     streamlit run dashboard/app.py
+
+Exit codes: 0 when the session ended normally or was stopped on purpose; 3 when
+the feed went silent while the market was still open (Docker restarts the
+screener and the saved positions are restored); 1 when it crashed.
 """
 from __future__ import annotations
 
@@ -51,7 +55,12 @@ STATE_PATH = BASE_DIR / "dashboard" / "state.json"
 logger = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
-MARKET_CLOSE_IST = (15, 15)   # NSE cash market close, hour and minute in Indian time
+MARKET_CLOSE_IST = (15, 15)   # end of continuous trading for F&O stocks since 3 Aug 2026, and Fyers' intraday square-off start
+MARKET_OPEN_IST = (9, 0)      # a silent feed from here to the close counts as a lost connection
+EXIT_FEED_LOST = 3            # exit code when the feed went silent while the market was open
+CONNECT_ATTEMPTS = 10         # tries at the start, so a restart during a network drop can wait it out
+CONNECT_WAIT_SECONDS = 20
+LOGIN_PROBLEM_MARKERS = ("token is invalid", "token expired", "invalid or expired", "invalid token")
 RECOVERED_REASON = "Recovered after restart (marked at last snapshot price)"
 RECOVERED_FLAT_REASON = "Recovered after restart (no price available, marked flat)"
 
@@ -61,10 +70,18 @@ def _ist_date(epoch_seconds: float):
     return datetime.fromtimestamp(epoch_seconds, IST).date()
 
 
+def is_login_problem(problem) -> bool:
+    """True if a broker error means the login itself is wrong (waiting will not fix it)."""
+    text = str(problem).lower()
+    return any(marker in text for marker in LOGIN_PROBLEM_MARKERS)
+
+
 class App:
     # True once the end-of-session routine has run. A class-level default, so
     # an App built without __init__ (as some tests do) still has it.
     _finished: bool = False
+    # The process exit code a normal return from run() should produce.
+    exit_code: int = 0
 
     def __init__(self, broker_name: str, use_db: bool = True, db_url: str | None = None):
         self.engine = CrossoverEngine()
@@ -269,8 +286,33 @@ class App:
             _time.sleep(0.25)  # be polite to the broker's REST rate limits across 40+ symbols
         print(f"Warm-started SMMA for {warmed}/{len(CONFIG.watchlist)} symbols from historical data.")
 
+    def _connect_with_retries(self, sleep=time.sleep):
+        """
+        Connect to the broker, retrying for a few minutes. A restart that follows a network
+        drop often finds DNS still down, and Docker's own restart delays are far too short to
+        wait that out. A wrong or expired login is not retried: waiting will not fix it.
+        """
+        for attempt in range(1, CONNECT_ATTEMPTS + 1):
+            try:
+                self.broker.connect()
+                return
+            except Exception as problem:
+                if attempt == CONNECT_ATTEMPTS or is_login_problem(problem):
+                    raise
+                print(f"Could not connect to the broker ({problem}). Trying again in "
+                      f"{CONNECT_WAIT_SECONDS} s (attempt {attempt} of {CONNECT_ATTEMPTS})...")
+                sleep(CONNECT_WAIT_SECONDS)
+
+    def _feed_lost_exit_code(self, now: datetime | None = None) -> int:
+        """EXIT_FEED_LOST if the feed went silent while the market was still open, otherwise 0."""
+        if self._session_is_over():
+            return 0
+        now = datetime.now(IST) if now is None else now
+        market_hours = MARKET_OPEN_IST <= (now.hour, now.minute) < MARKET_CLOSE_IST
+        return EXIT_FEED_LOST if market_hours and now.weekday() < 5 else 0
+
     def run(self, duration_seconds: int | None):
-        self.broker.connect()
+        self._connect_with_retries()
         self._warm_start_from_history()
         stop_at = time.time() + duration_seconds if duration_seconds else None
 
@@ -301,11 +343,15 @@ class App:
         try:
             while stop_at is None or time.time() < stop_at:
                 if time.time() - self._last_tick_at > STALE_FEED_TIMEOUT:
+                    self.exit_code = self._feed_lost_exit_code()
                     print(
                         f"\nNo ticks received for over {STALE_FEED_TIMEOUT}s -- "
                         "the feed appears to have disconnected (e.g. after "
                         "market close). Stopping automatically."
                     )
+                    if self.exit_code == EXIT_FEED_LOST:
+                        print("The market is still open, so this looks like a lost connection. Exiting with "
+                              f"code {EXIT_FEED_LOST} so Docker can restart the screener; open positions stay saved.")
                     break
                 time.sleep(0.5)
         finally:
@@ -362,13 +408,14 @@ class App:
 
 def run_to_exit_code(app, duration_seconds) -> int:
     """
-    Run the session and return the process exit code: 0 for a normal end or a
-    graceful stop, the code given to sys.exit, 130 for Ctrl+C before the handler
-    was installed, and 1 for a crash (after printing the traceback).
+    Run the session and return the process exit code: the app's own code (0, or 3 when the feed was
+    lost while the market was open) after a normal end, the code given to sys.exit after a graceful
+    stop, 130 for Ctrl+C before the handler was installed, and 1 for a crash (after printing the
+    traceback).
     """
     try:
         app.run(duration_seconds)
-        return 0
+        return getattr(app, "exit_code", 0)
     except SystemExit as stop:
         if isinstance(stop.code, int):
             return stop.code
