@@ -49,3 +49,4 @@ minute_table.py
 remark_trades.py
 *.db-shm
 *.db-wal
+*_report.txt
