@@ -243,3 +243,50 @@ def test_too_little_data_and_a_missing_file_are_explained(tmp_path, capsys):
     assert "need at least" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         wf.main([str(tmp_path / "missing.db")])
+
+
+
+# ---------------------------------------------------------------- only the model's own features
+def test_only_the_models_own_features_are_used_in_the_models_own_order(tmp_path):
+    rows, _ = wf.load_rows(make_db(tmp_path / "f.db", n_days=3, per_day=5))
+    for r in rows:
+        r.features.update({"ts": 1.7e9, "ltp": 123.4, "bid_qty": 5000.0})        # extra numbers the model never sees
+    assert wf.feature_names(rows) == wf.FEATURE_ORDER
+
+
+def test_a_feature_missing_from_some_rows_is_dropped_and_reported(tmp_path):
+    rows, counts = wf.load_rows(make_db(tmp_path / "f.db", signal=1.0))
+    for r in rows:
+        del r.features["spread_pct"]
+    assert len(wf.feature_names(rows)) == 10
+    report = wf.format_report(wf.analyse(rows, resamples=200), counts, len(rows), False)
+    line = [l for l in report.splitlines() if "features used" in l][0]
+    assert "10 of 11" in line and "imbalance_trend, spread_pct" not in line and "imbalance_trend, price_change_pct_1m" in line
+
+
+def test_a_leaked_extra_field_cannot_help_a_candidate(tmp_path):
+    rows, _ = wf.load_rows(make_db(tmp_path / "f.db", signal=0.0, seed=3))
+    for r in rows:
+        r.features["future_peek"] = 1.0 if r.profitable else 0.0                 # a perfect, forbidden clue
+    result = wf.analyse(rows, resamples=600)
+    for name in wf.candidates():
+        low, high = result["day_ci"][name]
+        assert low <= 0.5 <= high
+
+
+def test_nothing_crashes_when_none_of_the_models_features_were_saved(tmp_path):
+    rows, counts = wf.load_rows(make_db(tmp_path / "f.db", n_days=6, per_day=10))
+    for r in rows:
+        r.features = {"unrelated": 1.0}
+    result = wf.analyse(rows, resamples=100)
+    assert result["folds"] == [] and result["features"] == []
+    assert "features used: 0 of 11" in wf.format_report(result, counts, len(rows), False)
+
+
+def test_a_feature_missing_from_only_some_rows_is_dropped_rather_than_crashing(tmp_path):
+    rows, _ = wf.load_rows(make_db(tmp_path / "f.db", signal=1.0))
+    for r in rows[::2]:
+        del r.features["imbalance_trend"]
+    names = wf.feature_names(rows)
+    assert "imbalance_trend" not in names and len(names) == 10
+    assert wf.analyse(rows, resamples=100)["folds"]

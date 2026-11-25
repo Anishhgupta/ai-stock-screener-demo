@@ -38,6 +38,7 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from features.engineering import FEATURE_ORDER
 
 from storage.entry_filter import MATCH_TOLERANCE_SECONDS, is_mark
 
@@ -137,8 +138,8 @@ def load_rows(db, include_marks: bool = False):
 
 
 def feature_names(rows) -> list:
-    """The features every row has, in the order the first row lists them."""
-    return [k for k in rows[0].features if all(k in r.features for r in rows)]
+    """The model's own features (FEATURE_ORDER), in its own order, that every row has. Extra saved fields are ignored."""
+    return [k for k in FEATURE_ORDER if all(k in r.features for r in rows)]
 
 
 def walk_forward(rows, names, min_train: int = 40, min_class: int = 8):
@@ -205,7 +206,7 @@ def bootstrap(y, days, scores, kind: str, resamples: int, seed: int):
 
 def analyse(rows, min_train: int = 40, resamples: int = 3000, seed: int = 12345) -> dict:
     names = feature_names(rows)
-    folds, scores, y, days = walk_forward(rows, names, min_train)
+    folds, scores, y, days = walk_forward(rows, names, min_train) if names else ([], {}, None, None)
     if not folds:
         return {"folds": [], "features": names}
     tested = ~np.isnan(scores[next(iter(candidates()))])
@@ -265,6 +266,7 @@ def format_report(result: dict, counts: dict, n_rows: int, include_marks: bool) 
     out.append(f"  left out, Basic trade closed by a mark: {counts['left_out_marks']}"
                + ("  (use --include-marks to count them)" if not include_marks else "  (none: marks are included)"))
     out.append(f"  unusable features: {counts['bad_features']}")
+    out.append(f"  features used: {len(result['features'])} of {len(FEATURE_ORDER)}: " + ", ".join(result["features"]))
     if not result["folds"]:
         out += ["", "Not enough history yet: no day has enough earlier days (and both outcomes) to train on."]
         return "\n".join(out)
