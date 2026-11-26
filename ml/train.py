@@ -18,6 +18,13 @@ a silent change to the safety check itself. Any model trained this way
 should be treated as provisional and replaced once enough real data
 accumulates to clear the real 30-example default.
 
+By default the labels stop each replay at 15:15 IST, as the live engine does (see
+ml/labeling.py): since 3 Aug 2026 F&O stocks stop trading continuously then, and the
+closing auction that follows would otherwise decide the label of a late crossover.
+Pass --no-session-cutoff to reproduce the older labels. train_metrics.json records which
+was used and how many labels the close changed. NOTE: train_metrics.json is written next
+to the model file, so never save an experimental model into the deployed model's folder.
+
 Combining multiple days' data is legitimate here because every example
 is reduced to the same broker-agnostic numeric feature vector (SMMA
 spread, LTQ acceleration, Bid/Ask imbalance, etc. -- see
@@ -39,17 +46,28 @@ from sklearn.metrics import roc_auc_score, classification_report
 
 from config import MODEL_DIR
 from features.engineering import FEATURE_ORDER
-from ml.labeling import build_training_set
+from ml.labeling import MARKET_CLOSE_IST, build_training_set, new_stats
 
 DEFAULT_MIN_EXAMPLES = 30
 
 
+def _clock(session_close):
+    return None if session_close is None else f"{session_close[0]:02d}:{session_close[1]:02d}"
+
+
 def train(tick_csvs: list[Path], model_out: Path = MODEL_DIR / "crossover_model.joblib",
-          min_examples: int = DEFAULT_MIN_EXAMPLES):
+          min_examples: int = DEFAULT_MIN_EXAMPLES, session_close=None):
     examples = []
     per_file_counts = {}
+    close_stats = new_stats()
     for csv_path in tick_csvs:
-        file_examples = build_training_set(csv_path)
+        if session_close is None:
+            file_examples = build_training_set(csv_path)
+        else:
+            file_stats = new_stats()
+            file_examples = build_training_set(csv_path, session_close=session_close, stats=file_stats)
+            for key, value in file_stats.items():
+                close_stats[key] += value
         examples.extend(file_examples)
         per_file_counts[str(csv_path)] = len(file_examples)
 
@@ -94,12 +112,18 @@ def train(tick_csvs: list[Path], model_out: Path = MODEL_DIR / "crossover_model.
         "base_rate_profitable": float(y.mean()),
         "min_examples_required": min_examples,
         "below_recommended_30_example_minimum": below_recommended,
+        "session_close": _clock(session_close),
+        "close_effect": close_stats if session_close is not None else None,
     }
     (model_out.parent / "train_metrics.json").write_text(json.dumps(metrics, indent=2, default=float))
 
     print(f"Trained on {len(examples)} crossovers across {len(tick_csvs)} file(s):")
     for path, count in per_file_counts.items():
         print(f"  {path}: {count} crossovers")
+    if session_close is not None:
+        print(f"Replay stopped at {_clock(session_close)} IST: {close_stats['skipped_after_close']} crossover(s) "
+              f"after the close skipped, {close_stats['window_crossed_close']} replay window(s) ran past it, "
+              f"{close_stats['label_changed']} label(s) changed.")
     if below_recommended:
         print(
             f"\nWARNING: {len(examples)} examples is below the recommended "
@@ -113,7 +137,7 @@ def train(tick_csvs: list[Path], model_out: Path = MODEL_DIR / "crossover_model.
     return metrics
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--tick-csv", required=True, type=Path, nargs="+",
                          help="One or more tick CSV files. Multiple files are combined into one training set.")
@@ -121,5 +145,13 @@ if __name__ == "__main__":
     parser.add_argument("--min-examples", type=int, default=DEFAULT_MIN_EXAMPLES,
                          help=f"Minimum crossover examples required to train (default {DEFAULT_MIN_EXAMPLES}). "
                               f"Only lower this deliberately, as a documented emergency measure.")
-    args = parser.parse_args()
-    train(args.tick_csv, args.model_out, args.min_examples)
+    parser.add_argument("--no-session-cutoff", action="store_true",
+                         help="Reproduce the older labels, whose replay ran on past 15:15 into the closing "
+                              "auction. Not recommended.")
+    args = parser.parse_args(argv)
+    return train(args.tick_csv, args.model_out, args.min_examples,
+                 None if args.no_session_cutoff else MARKET_CLOSE_IST)
+
+
+if __name__ == "__main__":
+    main()
