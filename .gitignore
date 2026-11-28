@@ -50,3 +50,5 @@ remark_trades.py
 *.db-shm
 *.db-wal
 *_report.txt
+dup_check.py
+fix_readme.py

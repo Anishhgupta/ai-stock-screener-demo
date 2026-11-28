@@ -26,6 +26,7 @@ from typing import List, Optional
 
 from brokers.base import Tick
 from config import CONFIG
+from ml.depth_setting import announce_depth
 from signals.crossover import CrossoverEngine, CrossoverEvent
 
 LOOKAHEAD_MINUTES = CONFIG.max_hold_minutes
@@ -174,6 +175,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Show how much the 15:15 close changes the training labels.")
     parser.add_argument("tick_csv", nargs="+", type=Path, help="tick files, for example the ones a model was trained on")
     args = parser.parse_args(argv)
+    announce_depth()
     total = new_stats()
     print(f"Labels with the replay stopped at {MARKET_CLOSE_IST[0]:02d}:{MARKET_CLOSE_IST[1]:02d} IST, "
           "compared with the old replay that ran on into the closing auction:\n")

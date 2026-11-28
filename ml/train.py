@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import joblib
@@ -46,6 +47,7 @@ from sklearn.metrics import roc_auc_score, classification_report
 
 from config import MODEL_DIR
 from features.engineering import FEATURE_ORDER
+from ml.depth_setting import DEPTH_ENV, announce_depth
 from ml.labeling import MARKET_CLOSE_IST, build_training_set, new_stats
 
 DEFAULT_MIN_EXAMPLES = 30
@@ -114,6 +116,7 @@ def train(tick_csvs: list[Path], model_out: Path = MODEL_DIR / "crossover_model.
         "below_recommended_30_example_minimum": below_recommended,
         "session_close": _clock(session_close),
         "close_effect": close_stats if session_close is not None else None,
+        "min_depth_qty": os.environ.get(DEPTH_ENV),
     }
     (model_out.parent / "train_metrics.json").write_text(json.dumps(metrics, indent=2, default=float))
 
@@ -149,6 +152,7 @@ def main(argv=None):
                          help="Reproduce the older labels, whose replay ran on past 15:15 into the closing "
                               "auction. Not recommended.")
     args = parser.parse_args(argv)
+    announce_depth()
     return train(args.tick_csv, args.model_out, args.min_examples,
                  None if args.no_session_cutoff else MARKET_CLOSE_IST)
 
